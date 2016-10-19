@@ -174,7 +174,7 @@ def replaygain(opts, codec, outdir):
 	for dirpath, dirs, files in os.walk(outdir, topdown=False):
 		for name in dirs:
 			r = system(encoders[enc_opts[codec]['enc']]['regain']
-				% os.path.join(dirpath, name))
+				% escape_quote(os.path.join(dirpath, name)))
 			if r: failure(r, "replaygain")
 
 def setup_parser():
