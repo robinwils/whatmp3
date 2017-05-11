@@ -37,80 +37,20 @@ tracker = None
 # Max number of threads (e.g., Dual-core = 2, Hyperthreaded Dual-core = 4)
 max_threads = multiprocessing.cpu_count()
 
-# Tags to copy (note: changing/adding to these requires changing/adding values in/to 'encoders' below)
-copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'TRACKNUMBER', 'GENRE', 'COMMENT', 'DATE')
-
 # Default encoding options
 enc_opts = {
-    '320':	{'enc': 'lame',       'ext': '.mp3',  'opts': '-q 0 -b 320 --ignore-tag-errors --noreplaygain'},
-    'V0':	{'enc': 'lame',	      'ext': '.mp3',  'opts': '-q 0 -V 0 --vbr-new --ignore-tag-errors --noreplaygain'},
-    'V2':	{'enc': 'lame',	      'ext': '.mp3',  'opts': '-q 0 -V 2 --vbr-new --ignore-tag-errors --noreplaygain'},
-    'V8':	{'enc': 'lame',	      'ext': '.mp3',  'opts': '-q 0 -V 8 --vbr-new --ignore-tag-errors --noreplaygain'},
-    'Q8':	{'enc': 'oggenc',     'ext': '.ogg',  'opts': '-q 8 --utf8'},
-    'AAC':	{'enc': 'neroAacEnc', 'ext': '.aac',  'opts': '-br 320000'},
-    'ALAC':	{'enc': 'ffmpeg',     'ext': '.m4a', 'opts': ''},
-    'FLAC': {'enc': 'flac',       'ext': '.flac', 'opts': '--best'}
-}
-
-encoders = {
-    'lame': {
-        'enc':         "lame --silent %(opts)s %(tags)s --add-id3v2 - %(filename)s 2>&1",
-        'TITLE':       "--tt %(TITLE)s",
-        'ALBUM':       "--tl %(ALBUM)s",
-        'ARTIST':      "--ta %(ARTIST)s",
-        'TRACKNUMBER': "--tn %(TRACKNUMBER)s",
-        'GENRE':       "--tg %(GENRE)s",
-        'DATE':        "--ty %(DATE)s",
-        'COMMENT':     "--tc %(COMMENT)s",
-        'regain':      "mp3gain -q -c -s i %s/*.mp3"
-    },
-    'oggenc': {
-        'enc':         "oggenc -Q %(opts)s %(tags)s -o %(filename)s - 2>&1",
-        'TITLE':       "-t %(TITLE)s",
-        'ALBUM':       "-l %(ALBUM)s",
-        'ARTIST':      "-a %(ARTIST)s",
-        'TRACKNUMBER': "-N %(TRACKNUMBER)s",
-        'GENRE':       "-G %(GENRE)s",
-        'DATE':        "-d %(DATE)s",
-        'COMMENT':     "-c comment=%(COMMENT)s",
-        'regain':      "vorbisgain -qafrs %s/*.ogg"
-    },
-    'neroAacEnc': {
-        'enc':         "neroAacEnc %(opts)s -if - -of %(filename)s 2>&1 && neroAacTag %(tags)s",
-        'TITLE':       "-meta:title=%(TITLE)s",
-        'ALBUM':       "-meta:album=%(ALBUM)s",
-        'ARTIST':      "-meta:artist=%(ARTIST)s",
-        'TRACKNUMBER': "-meta:track=%(TRACKNUMBER)s",
-        'GENRE':       "-meta:genre=%(GENRE)s",
-        'DATE':        "-meta:year=%(DATE)s",
-        'COMMENT':     "-meta:comment=%(COMMENT)s",
-        'regain':      "aacgain -q -c %s/*.aac"
-    },
-    'ffmpeg': {
-        'enc':         "ffmpeg %(opts)s -i - -acodec alac %(tags)s %(filename)s 2>&1",
-        'TITLE':       "-metadata title=%(TITLE)s",
-        'ALBUM':       "-metadata album=%(ALBUM)s",
-        'ARTIST':      "-metadata author=%(ARTIST)s",
-        'TRACKNUMBER': "-metadata track=%(TRACKNUMBER)s",
-        'GENRE':       "-metadata genre=%(GENRE)s",
-        'DATE':	       "-metadata date=%(DATE)s",
-        'COMMENT':     "-metadata comment=%(COMMENT)s",
-        'regain':      ""
-    },
-    'flac': {
-        'enc':         "flac %(opts)s -s %(tags)s -o %(filename)s - 2>&1",
-        'TITLE':       "-T TITLE=%(TITLE)s",
-        'ALBUM':       "-T ALBUM=%(ALBUM)s",
-        'ARTIST':      "-T ARTIST=%(ARTIST)s",
-        'TRACKNUMBER': "-T TRACKNUMBER=%(TRACKNUMBER)s",
-        'GENRE':       "-T GENRE=%(GENRE)s",
-        'DATE':        "-T DATE=%(DATE)s",
-        'COMMENT':     "-T COMMENT=%(COMMENT)s",
-        'regain':      "metaflac --add-replay-gain %s/*.flac"
-    }
+    '320':  {'ext': '.mp3',  'opts': '-b:a 320k'},
+    'V0':   {'ext': '.mp3',  'opts': '-q:a 0'},
+    'V2':   {'ext': '.mp3',  'opts': '-q:a 2'},
+    'V8':   {'ext': '.mp3',  'opts': '-q:a 8'},
+    'Q8':   {'ext': '.ogg',  'opts': '-c:a libvorbis -qscale:a 8'},
+    'AAC':  {'ext': '.m4a',  'opts': '-c:a aac -b:a 320k -movflags +faststart'},
+    'ALAC': {'ext': '.m4a',  'opts': '-c:a alac'},
+    'FLAC': {'ext': '.flac', 'opts': '-c:a flac -sample_fmt s16 -ar 44100'}
 }
 
 dither_cmd = 'sox -t wav - -b 16 -t wav - rate 44100 dither'
+ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
 
 # END CONFIGURATION
 
@@ -230,19 +170,6 @@ def system(cmd):
     return os.system(cmd)
 
 def transcode(f, flacdir, mp3_dir, codec, opts, lock):
-    tags = {}
-    for tag in copy_tags:
-        tagcmd = "metaflac --show-tag=" + shlex.quote(tag) + \
-                 " " + shlex.quote(f)
-        t = re.sub('\S.+?=', '', os.popen(tagcmd).read().rstrip(), count=1)
-        if t:
-            tags.update({tag: t})
-        del t
-    if (opts.zeropad and 'TRACKNUMBER' in tags
-       and len(tags['TRACKNUMBER']) == 1):
-        tags['TRACKNUMBER'] = '0' + tags['TRACKNUMBER']
-    if opts.skipgenre and 'GENRE' in tags: del tags['GENRE']
-
     outname = re.sub(re.escape(flacdir), mp3_dir, f)
     outname = re.sub(re.compile('\.flac$', re.IGNORECASE), '', outname)
     with lock:
@@ -253,20 +180,12 @@ def transcode(f, flacdir, mp3_dir, codec, opts, lock):
         print("WARN: file %s already exists" % (os.path.relpath(outname)),
               file=sys.stderr)
         return 1
-    flac_cmd = encoders[enc_opts[codec]['enc']]['enc']
-    tagline = ''
-    for tag in tags:
-        tagline = tagline + " " + \
-                (encoders[enc_opts[codec]['enc']][tag] % {tag: shlex.quote(tags[tag])})
-    tagline = tagline % tags
     if opts.dither:
         flac_cmd = dither_cmd + ' | ' + flac_cmd
-    flac_cmd = "flac -sdc -- " + escape_percent(shlex.quote(f)) + \
-               " | " + flac_cmd
-    flac_cmd = flac_cmd % {
+    flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
+        'infile': escape_percent(shlex.quote(f)),
         'filename': shlex.quote(outname),
-        'tags': tagline
     }
     outname = os.path.basename(outname)
     if not opts.silent:
