@@ -49,6 +49,57 @@ ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(fil
 
 codecs = []
 
+placeholders = {
+    'n': 'TRACK',
+    't': 'TITLE',
+    'a': 'ARTIST'
+}
+
+def filename_from_tags(pattern, tags):
+    if tags is None:
+        print("error: renaming, no tags")
+        return None
+
+    filename = ""
+    index = 0
+    for match in re.finditer(r"(%\w+%)", pattern):
+        placeholder = match.group(0)[1:-1]
+        if placeholder not in placeholders:
+            print("error: unknown placeholder " + placeholder)
+            return None
+        if placeholders[placeholder] not in tags:
+            print("error: no " + placeholders[placeholder] + " tag")
+            return None
+        filename += pattern[index:match.start()] + "%(" + placeholders[placeholder] + ")s"
+        index = match.end()
+    if index < len(pattern):
+        filename += escape_percent(pattern[index:])
+    return filename % tags
+
+def do_rename(rename_pattern, dirname, filename):
+    if not rename_pattern:
+        return
+
+    tags = tags_from_file(dirname + "/" + filename)
+    new_filename = filename_from_tags(rename_pattern, tags)
+    if new_filename is None:
+        return
+    print(new_filename)
+
+    #    os.replace(dirname + "/" + filename, dirname + "/" + new_filename)
+
+def tags_from_file(filepath):
+    tags = {}
+    tagcmd = "ffmpeg -i {} -f ffmetadata - 2> /dev/null".format(shlex.quote(filepath))
+    for line in os.popen(tagcmd).read().rstrip().splitlines():
+        tag = line.split("=")
+        if len(tag) != 2 or tag[0] not in copy_tags:
+            continue
+        tags[tag[0]] = tag[1]
+
+    return tags
+
+
 def copy_other(opts, flacdir, outdir):
     if opts.verbose:
         print('COPYING other files')
@@ -129,6 +180,7 @@ def setup_parser():
         [['-t', '--tracker'],     tracker,     'URL',  'tracker URL'],
         [['-o', '--output'],      output,      'DIR',  'set output dir'],
         [['-O', '--torrent-dir'], torrent_dir, 'DIR',  'set independent torrent output dir'],
+        [['-e', '--rename'],      False,       'PATTERN', 'rename files according to tags according to PATTERN'],
     ]:
         p.add_argument(*a[0], **{
             'default': a[1], 'action': 'store',
@@ -197,7 +249,7 @@ def main():
     opts = parser.parse_args()
     if not opts.output.endswith('/'):
         opts.output += '/'
-    if len(codecs) == 0 and not opts.original:
+    if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
         exit()
     for flacdir in opts.flacdirs:
@@ -208,6 +260,7 @@ def main():
         for dirpath, dirs, files in os.walk(flacdir, topdown=False):
             for name in files:
                 if fnmatch(name.lower(), '*.flac'):
+                    do_rename(opts.rename, dirpath, name)
                     flacfiles.append(os.path.join(dirpath, name))
         flacfiles.sort()
         if opts.ignore and not flacfiles:
