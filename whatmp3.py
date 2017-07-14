@@ -105,18 +105,6 @@ def make_torrent(opts, target):
     r = system(torrent_cmd)
     if r: failure(r, torrent_cmd)
 
-def replaygain(opts, codec, outdir):
-    if opts.verbose:
-        print("APPLYING replaygain")
-        print(encoders[enc_opts[codec]['enc']]['regain'] % outdir)
-    r = system(encoders[enc_opts[codec]['enc']]['regain'] % shlex.quote(outdir))
-    if r: failure(r, "replaygain")
-    for dirpath, dirs, files in os.walk(outdir, topdown=False):
-        for name in dirs:
-            r = system(encoders[enc_opts[codec]['enc']]['regain']
-                       % shlex.quote(os.path.join(dirpath, name)))
-            if r: failure(r, "replaygain")
-
 def setup_parser():
     p = argparse.ArgumentParser(
         description="whatmp3 transcodes audio files and creates torrents for them",
@@ -127,7 +115,6 @@ def setup_parser():
     for a in [
         [['-v', '--verbose'],    False,     'increase verbosity'],
         [['-n', '--notorrent'],  False,     'do not create a torrent after conversion'],
-        [['-r', '--replaygain'], False,     'add ReplayGain to new files'],
         [['-c', '--original'],   False,     'create a torrent for the original FLAC'],
         [['-i', '--ignore'],     False,     'ignore top level directories without flacs'],
         [['-s', '--silent'],     False,     'do not write to stdout'],
@@ -267,8 +254,6 @@ def main():
 
             if opts.copyother:
                 copy_other(opts, flacdir, outdir)
-            if opts.replaygain:
-                replaygain(opts, codec, outdir)
             if opts.output and opts.tracker and not opts.notorrent:
                 make_torrent(opts, outdir)
             if not opts.silent:
