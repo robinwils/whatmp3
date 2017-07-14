@@ -31,6 +31,8 @@ tracker = None
 # Max number of threads (e.g., Dual-core = 2, Hyperthreaded Dual-core = 4)
 max_threads = multiprocessing.cpu_count()
 
+copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'TRACKNUMBER', 'GENRE', 'COMMENT', 'DATE')
+
 # Default encoding options
 enc_opts = {
     '320':  {'ext': '.mp3',  'opts': '-b:a 320k'},
@@ -92,18 +94,13 @@ def filename_from_tags(pattern, tags, dirname, filename):
 
 def do_rename(rename_pattern, dirname, filename):
     if not rename_pattern:
-        return
+        return filename
 
     tags = tags_from_file(dirname + "/" + filename)
-    new_filename = filename_from_tags(rename_pattern, tags, dirname, filename)
-    if new_filename is None:
-        return
-    print(new_filename)
-
-    # new_filename is only the filename (not including the leading directory)
+    # the new filename is only the filename (not including the leading directory)
     # filename can conatin directories, we need to create the non existing ones
+    return filename_from_tags(rename_pattern, tags, dirname, filename)
 
-    #    os.replace(dirname + "/" + filename, dirname + "/" + new_filename)
 
 
 def tags_from_file(filepath):
@@ -224,11 +221,11 @@ def system(cmd):
     return os.system(cmd)
 
 def transcode(f, flacdir, mp3_dir, codec, opts, lock):
-    outname = re.sub(re.escape(flacdir), mp3_dir, f)
+    (origdir, origfile) = os.path.split(f)
+    outname = os.path.join(mp3_dir, origfile)
     outname = re.sub(re.compile('\.flac$', re.IGNORECASE), '', outname)
     with lock:
-        if not os.path.exists(os.path.dirname(outname)):
-            os.makedirs(os.path.dirname(outname))
+        os.makedirs(os.path.dirname(outname), exist_ok=True)
     outname += enc_opts[codec]['ext']
     if os.path.exists(outname) and not opts.overwrite:
         print("WARN: file %s already exists" % (os.path.relpath(outname)),
@@ -249,6 +246,20 @@ def transcode(f, flacdir, mp3_dir, codec, opts, lock):
         failure(r, "error encoding %s" % outname)
         system("touch '%s/FAILURE'" % mp3_dir)
     return 0
+
+
+def change_codec_name(directory, codec):
+    directory = directory.rstrip('/')
+    last_slash_idx = directory.rfind('/')
+    leading_dirs = directory[0:last_slash_idx + 1]
+    last_dir = directory[last_slash_idx + 1:]
+
+    flacre = re.compile('FLAC', re.IGNORECASE)
+    if flacre.search(last_dir):
+        return leading_dirs + flacre.sub(codec, last_dir)
+    else:
+        return leading_dirs + last_dir + " (" + codec + ")"
+
 
 class Transcode(threading.Thread):
     def __init__(self, file, flacdir, mp3_dir, codec, opts, lock, cv):
@@ -278,15 +289,15 @@ def main():
         exit()
     for flacdir in opts.flacdirs:
         flacdir = os.path.abspath(flacdir)
-        flacfiles = []
+        flacfiles = {}
         if not os.path.exists(opts.torrent_dir):
             os.makedirs(opts.torrent_dir)
         for dirpath, dirs, files in os.walk(flacdir, topdown=False):
             for name in files:
                 if fnmatch(name.lower(), '*.flac'):
-                    do_rename(opts.rename, dirpath, name)
-                    flacfiles.append(os.path.join(dirpath, name))
-        flacfiles.sort()
+                    new_filename = do_rename(opts.rename, dirpath, name)
+                    flacfile = os.path.join(dirpath, name)
+                    flacfiles[flacfile] = opts.output + new_filename
         if opts.ignore and not flacfiles:
             if not opts.silent:
                 print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
@@ -300,26 +311,18 @@ def main():
                 print('END ORIGINAL FLAC')
 
         for codec in codecs:
-            outdir = os.path.basename(flacdir)
-            flacre = re.compile('FLAC', re.IGNORECASE)
-            if flacre.search(outdir):
-                outdir = flacre.sub(codec, outdir)
-            else:
-                outdir = outdir + " (" + codec + ")"
-            outdir = opts.output + outdir
-            if not os.path.exists(outdir):
-                os.makedirs(outdir)
-
             if not opts.silent:
                 print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
             threads = []
             cv = threading.Condition()
             lock = threading.Lock()
-            for f in flacfiles:
+            for infile, outfile in flacfiles.items():
+                (dirs, filename) = os.path.split(outfile)
+                outdir = change_codec_name(dirs, codec)
                 with cv:
                     while (threading.active_count() == max(1, opts.max_threads) + 1):
                         cv.wait()
-                    t = Transcode(f, flacdir, outdir, codec, opts, lock, cv)
+                    t = Transcode(infile, flacdir, outdir, codec, opts, lock, cv)
                 t.start()
                 threads.append(t)
             for t in threads:
