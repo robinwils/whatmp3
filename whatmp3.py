@@ -52,49 +52,73 @@ codecs = []
 placeholders = {
     'n': 'TRACK',
     't': 'TITLE',
-    'a': 'ARTIST'
+    'a': 'ARTIST',
+    'f': '',
+    'd': '',
 }
 
-def filename_from_tags(pattern, tags):
+def filename_from_tags(pattern, tags, dirname, filename):
     if tags is None:
         print("error: renaming, no tags")
         return None
 
-    filename = ""
+    new_filename = ""
     index = 0
+    pl_is_tag = True
     for match in re.finditer(r"(%\w+%)", pattern):
         placeholder = match.group(0)[1:-1]
         if placeholder not in placeholders:
             print("error: unknown placeholder " + placeholder)
             return None
-        if placeholders[placeholder] not in tags:
+        if len(placeholders[placeholder]) != 0 and placeholders[placeholder] not in tags:
             print("error: no " + placeholders[placeholder] + " tag")
             return None
-        filename += pattern[index:match.start()] + "%(" + placeholders[placeholder] + ")s"
+        elif len(placeholders[placeholder]) == 0:
+            pl_is_tag = False
+
+        new_filename += pattern[index:match.start()]
+        if pl_is_tag:
+            new_filename += "%(" + placeholders[placeholder] + ")s"
+        elif placeholder == 'f':
+            new_filename += filename
+        elif placeholder == 'd':
+            new_filename += (dirname if '/' not in dirname
+                    else dirname[dirname.rfind('/') + 1:])
+
         index = match.end()
     if index < len(pattern):
-        filename += escape_percent(pattern[index:])
-    return filename % tags
+        new_filename += escape_percent(pattern[index:])
+    return new_filename % tags
 
 def do_rename(rename_pattern, dirname, filename):
     if not rename_pattern:
         return
 
     tags = tags_from_file(dirname + "/" + filename)
-    new_filename = filename_from_tags(rename_pattern, tags)
+    new_filename = filename_from_tags(rename_pattern, tags, dirname, filename)
     if new_filename is None:
         return
     print(new_filename)
 
+    # new_filename is only the filename (not including the leading directory)
+    # filename can conatin directories, we need to create the non existing ones
+
     #    os.replace(dirname + "/" + filename, dirname + "/" + new_filename)
+
 
 def tags_from_file(filepath):
     tags = {}
+
+    # get tags using ffmpeg. Maybe there is a better python lib for this?
+    # this is consistent with any file format though
+    # result is one tag per line, like that:
+    # TAG=val
     tagcmd = "ffmpeg -i {} -f ffmetadata - 2> /dev/null".format(shlex.quote(filepath))
     for line in os.popen(tagcmd).read().rstrip().splitlines():
         tag = line.split("=")
         if len(tag) != 2 or tag[0] not in copy_tags:
             continue
+        # create a dict of tags
         tags[tag[0]] = tag[1]
 
     return tags
