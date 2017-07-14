@@ -25,9 +25,6 @@ torrent_dir = output
 # Do you want to copy additional files (.jpg, .log, etc)?
 copyother = 1
 
-# Do you want to zeropad tracknumbers? (1 => 01, 2 => 02 ...)
-zeropad = 1
-
 # Specify tracker announce URL
 tracker = None
 
@@ -125,7 +122,6 @@ def setup_parser():
         [['-H', '--nodots'],     False,     'do not copy dot/hidden files after conversion'],
         [['-w', '--overwrite'],  False,     'overwrite files in output dir'],
         [['-m', '--copyother'],  copyother, 'copy additional files (def: true)'],
-        [['-z', '--zeropad'],    zeropad,   'zeropad tracknumbers (def: true)'],
     ]:
         p.add_argument(*a[0], **{'default': a[1], 'action': 'store_true', 'help': a[2]})
     for a in [
