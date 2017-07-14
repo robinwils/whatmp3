@@ -28,9 +28,6 @@ copyother = 1
 # Do you want to zeropad tracknumbers? (1 => 01, 2 => 02 ...)
 zeropad = 1
 
-# Do you want to dither FLACs to 16/44 before encoding?
-dither = 0
-
 # Specify tracker announce URL
 tracker = None
 
@@ -49,7 +46,6 @@ enc_opts = {
     'FLAC': {'ext': '.flac', 'opts': '-c:a flac -sample_fmt s16 -ar 44100'}
 }
 
-dither_cmd = 'sox -t wav - -b 16 -t wav - rate 44100 dither'
 ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
 
 # END CONFIGURATION
@@ -141,7 +137,6 @@ def setup_parser():
         [['-C', '--nocue'],      False,     'do not copy cue files after conversion'],
         [['-H', '--nodots'],     False,     'do not copy dot/hidden files after conversion'],
         [['-w', '--overwrite'],  False,     'overwrite files in output dir'],
-        [['-d', '--dither'],     dither,    'dither FLACs to 16/44 before encoding'],
         [['-m', '--copyother'],  copyother, 'copy additional files (def: true)'],
         [['-z', '--zeropad'],    zeropad,   'zeropad tracknumbers (def: true)'],
     ]:
@@ -180,8 +175,6 @@ def transcode(f, flacdir, mp3_dir, codec, opts, lock):
         print("WARN: file %s already exists" % (os.path.relpath(outname)),
               file=sys.stderr)
         return 1
-    if opts.dither:
-        flac_cmd = dither_cmd + ' | ' + flac_cmd
     flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
         'infile': escape_percent(shlex.quote(f)),
