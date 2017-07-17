@@ -31,7 +31,7 @@ tracker = None
 # Max number of threads (e.g., Dual-core = 2, Hyperthreaded Dual-core = 4)
 max_threads = multiprocessing.cpu_count()
 
-copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'TRACKNUMBER', 'GENRE', 'COMMENT', 'DATE')
+copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'GENRE', 'COMMENT', 'DATE', 'TRACK')
 
 # Default encoding options
 enc_opts = {
@@ -66,8 +66,8 @@ def filename_from_tags(pattern, tags, dirname, filename):
 
     new_filename = ""
     index = 0
-    pl_is_tag = True
     for match in re.finditer(r"(%\w+%)", pattern):
+        pl_is_tag = True
         placeholder = match.group(0)[1:-1]
         if placeholder not in placeholders:
             print("error: unknown placeholder " + placeholder)
@@ -113,10 +113,10 @@ def tags_from_file(filepath):
     tagcmd = "ffmpeg -i {} -f ffmetadata - 2> /dev/null".format(shlex.quote(filepath))
     for line in os.popen(tagcmd).read().rstrip().splitlines():
         tag = line.split("=")
-        if len(tag) != 2 or tag[0] not in copy_tags:
+        if len(tag) != 2 or tag[0].upper() not in copy_tags:
             continue
         # create a dict of tags
-        tags[tag[0]] = tag[1]
+        tags[tag[0].upper()] = tag[1]
 
     return tags
 
@@ -220,20 +220,18 @@ def setup_parser():
 def system(cmd):
     return os.system(cmd)
 
-def transcode(f, flacdir, mp3_dir, codec, opts, lock):
-    (origdir, origfile) = os.path.split(f)
-    outname = os.path.join(mp3_dir, origfile)
-    outname = re.sub(re.compile('\.flac$', re.IGNORECASE), '', outname)
+def transcode(infile, outfile, codec, opts, lock):
+    outname = outfile + enc_opts[codec]['ext']
     with lock:
         os.makedirs(os.path.dirname(outname), exist_ok=True)
-    outname += enc_opts[codec]['ext']
     if os.path.exists(outname) and not opts.overwrite:
         print("WARN: file %s already exists" % (os.path.relpath(outname)),
               file=sys.stderr)
         return 1
+    print("OUTNAME: {}".format(outname))
     flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
-        'infile': escape_percent(shlex.quote(f)),
+        'infile': escape_percent(shlex.quote(infile)),
         'filename': shlex.quote(outname),
     }
     outname = os.path.basename(outname)
@@ -244,7 +242,7 @@ def transcode(f, flacdir, mp3_dir, codec, opts, lock):
     r = system(flac_cmd)
     if r:
         failure(r, "error encoding %s" % outname)
-        system("touch '%s/FAILURE'" % mp3_dir)
+        system("touch '%s/FAILURE'" % outfile)
     return 0
 
 
@@ -262,18 +260,17 @@ def change_codec_name(directory, codec):
 
 
 class Transcode(threading.Thread):
-    def __init__(self, file, flacdir, mp3_dir, codec, opts, lock, cv):
+    def __init__(self, infile, outfile, codec, opts, lock, cv):
         threading.Thread.__init__(self)
-        self.file = file
-        self.flacdir = flacdir
-        self.mp3_dir = mp3_dir
+        self.infile = infile
+        self.outfile = outfile
         self.codec = codec
         self.opts = opts
         self.lock = lock
         self.cv = cv
 
     def run(self):
-        r = transcode(self.file, self.flacdir, self.mp3_dir, self.codec,
+        r = transcode(self.infile, self.outfile, self.codec,
                       self.opts, self.lock)
         with self.cv:
             self.cv.notify_all()
@@ -322,7 +319,7 @@ def main():
                 with cv:
                     while (threading.active_count() == max(1, opts.max_threads) + 1):
                         cv.wait()
-                    t = Transcode(infile, flacdir, outdir, codec, opts, lock, cv)
+                    t = Transcode(infile, os.path.join(outdir, filename), codec, opts, lock, cv)
                 t.start()
                 threads.append(t)
             for t in threads:
