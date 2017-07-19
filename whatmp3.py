@@ -284,9 +284,9 @@ def main():
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
         exit()
+    flacfiles = {}
     for flacdir in opts.flacdirs:
         flacdir = os.path.abspath(flacdir)
-        flacfiles = {}
         if not os.path.exists(opts.torrent_dir):
             os.makedirs(opts.torrent_dir)
         for dirpath, dirs, files in os.walk(flacdir, topdown=False):
@@ -307,30 +307,30 @@ def main():
             if not opts.silent:
                 print('END ORIGINAL FLAC')
 
-        for codec in codecs:
-            if not opts.silent:
-                print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
-            threads = []
-            cv = threading.Condition()
-            lock = threading.Lock()
-            for infile, outfile in flacfiles.items():
-                (dirs, filename) = os.path.split(outfile)
-                outdir = change_codec_name(dirs, codec)
-                with cv:
-                    while (threading.active_count() == max(1, opts.max_threads) + 1):
-                        cv.wait()
-                    t = Transcode(infile, os.path.join(outdir, filename), codec, opts, lock, cv)
-                t.start()
-                threads.append(t)
-            for t in threads:
-                t.join()
+    for codec in codecs:
+        if not opts.silent:
+            print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
+        threads = []
+        cv = threading.Condition()
+        lock = threading.Lock()
+        for infile, outfile in flacfiles.items():
+            (dirs, filename) = os.path.split(outfile)
+            outdir = change_codec_name(dirs, codec)
+            with cv:
+                while (threading.active_count() == max(1, opts.max_threads) + 1):
+                    cv.wait()
+                t = Transcode(infile, os.path.join(outdir, filename), codec, opts, lock, cv)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
 
-            if opts.copyother:
-                copy_other(opts, flacdir, outdir)
-            if opts.output and opts.tracker and not opts.notorrent:
-                make_torrent(opts, outdir)
-            if not opts.silent:
-                print('END ' + codec + ': %s' % os.path.relpath(flacdir))
+        if opts.copyother:
+            copy_other(opts, flacdir, outdir)
+        if opts.output and opts.tracker and not opts.notorrent:
+            make_torrent(opts, outdir)
+        if not opts.silent:
+            print('END ' + codec + ': %s' % os.path.relpath(flacdir))
 
         if opts.verbose: print('ALL DONE: ' + os.path.relpath(flacdir))
     return 0
