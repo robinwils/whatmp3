@@ -246,13 +246,13 @@ def transcode(infile, outfile, codec, opts, lock):
     return 0
 
 
-def change_codec_name(directory, codec):
+def change_format_name(directory, informat, codec):
     directory = directory.rstrip('/')
     last_slash_idx = directory.rfind('/')
     leading_dirs = directory[0:last_slash_idx + 1]
     last_dir = directory[last_slash_idx + 1:]
 
-    flacre = re.compile('FLAC', re.IGNORECASE)
+    flacre = re.compile(informat, re.IGNORECASE)
     if flacre.search(last_dir):
         return leading_dirs + flacre.sub(codec, last_dir)
     else:
@@ -285,13 +285,15 @@ def main():
         parser.error("you must provide at least one format to transcode to")
         exit()
     flacfiles = {}
+    outdir = ""
     for flacdir in opts.flacdirs:
         flacdir = os.path.abspath(flacdir)
         if not os.path.exists(opts.torrent_dir):
             os.makedirs(opts.torrent_dir)
         for dirpath, dirs, files in os.walk(flacdir, topdown=False):
             for name in files:
-                if fnmatch(name.lower(), '*.flac'):
+                if (fnmatch(name.lower(), '*.flac')
+                   or fnmatch(name.lower(), '*.aiff')):
                     new_filename = do_rename(opts.rename, dirpath, name)
                     flacfile = os.path.join(dirpath, name)
                     flacfiles[flacfile] = opts.output + new_filename
@@ -315,7 +317,8 @@ def main():
         lock = threading.Lock()
         for infile, outfile in flacfiles.items():
             (dirs, filename) = os.path.split(outfile)
-            outdir = change_codec_name(dirs, codec)
+            (froot, fext) = os.path.splitext(infile)
+            outdir = change_format_name(dirs, fext[1:].upper(), codec)
             with cv:
                 while (threading.active_count() == max(1, opts.max_threads) + 1):
                     cv.wait()
