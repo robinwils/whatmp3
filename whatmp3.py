@@ -74,6 +74,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
             return None
         if len(placeholders[placeholder]) != 0 and placeholders[placeholder] not in tags:
             print("error: no " + placeholders[placeholder] + " tag")
+            print(tags)
             return None
         elif len(placeholders[placeholder]) == 0:
             pl_is_tag = False
@@ -94,7 +95,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
 
 def do_rename(rename_pattern, dirname, filename):
     if not rename_pattern:
-        return filename
+        rename_pattern = "%d%/%f%"
 
     tags = tags_from_file(dirname + "/" + filename)
     # the new filename is only the filename (not including the leading directory)
@@ -121,26 +122,21 @@ def tags_from_file(filepath):
     return tags
 
 
-def copy_other(opts, flacdir, outdir):
+def copy_other(opts, files, outdir):
     if opts.verbose:
         print('COPYING other files')
-    for dirpath, dirs, files in os.walk(flacdir, topdown=False):
-        for name in files:
-            if opts.nolog and fnmatch(name.lower(), '*.log'):
-                continue
-            if opts.nocue and fnmatch(name.lower(), '*.cue'):
-                continue
-            if opts.nodots and fnmatch(name.lower(), '^.'):
-                continue
-            if (not fnmatch(name.lower(), '*.flac')
-               and not fnmatch(name.lower(), '*.m3u')):
-                d = re.sub(re.escape(flacdir), outdir, dirpath)
-                if (os.path.exists(os.path.join(d, name))
-                   and not opts.overwrite):
-                    continue
-                if not os.path.exists(d):
-                    os.makedirs(d)
-                shutil.copy(os.path.join(dirpath, name), d)
+    for name in files:
+        if opts.nolog and fnmatch(name.lower(), '*.log'):
+            continue
+        if opts.nocue and fnmatch(name.lower(), '*.cue'):
+            continue
+        if opts.nodots and fnmatch(name.lower(), '^.'):
+            continue
+        if (not fnmatch(name.lower(), '*.flac')
+           and not fnmatch(name.lower(), '*.m3u')):
+            if not os.path.exists(outdir):
+                os.makedirs(outdir)
+            shutil.copy(name, os.path.join(outdir, os.path.split(name)[1]))
 
 class EncoderArg(argparse.Action):
     def __init__(self, option_strings, dest, nargs=None, **kwargs):
@@ -228,7 +224,6 @@ def transcode(infile, outfile, codec, opts, lock):
         print("WARN: file %s already exists" % (os.path.relpath(outname)),
               file=sys.stderr)
         return 1
-    print("OUTNAME: {}".format(outname))
     flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
         'infile': escape_percent(shlex.quote(infile)),
@@ -285,18 +280,28 @@ def main():
         parser.error("you must provide at least one format to transcode to")
         exit()
     flacfiles = {}
+    files_to_copy = {}
     outdir = ""
     for flacdir in opts.flacdirs:
         flacdir = os.path.abspath(flacdir)
         if not os.path.exists(opts.torrent_dir):
             os.makedirs(opts.torrent_dir)
         for dirpath, dirs, files in os.walk(flacdir, topdown=False):
+            new_dir = ""
             for name in files:
                 if (fnmatch(name.lower(), '*.flac')
                    or fnmatch(name.lower(), '*.aiff')):
                     new_filename = do_rename(opts.rename, dirpath, name)
                     flacfile = os.path.join(dirpath, name)
                     flacfiles[flacfile] = opts.output + new_filename
+                    new_dir, _ = os.path.split(flacfiles[flacfile])
+                    if not new_dir:
+                        new_dir, _ = os.path.split(flacfiles[flacfile])
+                elif opts.copyother and new_dir:
+                    if new_dir not in files_to_copy:
+                        files_to_copy[new_dir] = []
+                    files_to_copy[new_dir].append(os.path.join(dirpath, name))
+
         if opts.ignore and not flacfiles:
             if not opts.silent:
                 print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
@@ -308,7 +313,6 @@ def main():
                 make_torrent(opts, flacdir)
             if not opts.silent:
                 print('END ORIGINAL FLAC')
-
     for codec in codecs:
         if not opts.silent:
             print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
@@ -319,6 +323,8 @@ def main():
             (dirs, filename) = os.path.split(outfile)
             (froot, fext) = os.path.splitext(infile)
             outdir = change_format_name(dirs, fext[1:].upper(), codec)
+            if opts.copyother and dirs in files_to_copy:
+                copy_other(opts, files_to_copy[dirs], outdir)
             with cv:
                 while (threading.active_count() == max(1, opts.max_threads) + 1):
                     cv.wait()
@@ -328,8 +334,6 @@ def main():
         for t in threads:
             t.join()
 
-        if opts.copyother:
-            copy_other(opts, flacdir, outdir)
         if opts.output and opts.tracker and not opts.notorrent:
             make_torrent(opts, outdir)
         if not opts.silent:
