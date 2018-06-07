@@ -8,7 +8,7 @@ import shutil
 import sys
 import threading
 from fnmatch import fnmatch
-import multiprocessing
+import concurrent.futures
 import shlex
 
 VERSION = "3.8"
@@ -254,24 +254,6 @@ def change_format_name(directory, informat, codec):
     else:
         return leading_dirs + last_dir + " (" + codec + ")"
 
-
-class Transcode(threading.Thread):
-    def __init__(self, infile, outfile, codec, opts, lock, cv):
-        threading.Thread.__init__(self)
-        self.infile = infile
-        self.outfile = outfile
-        self.codec = codec
-        self.opts = opts
-        self.lock = lock
-        self.cv = cv
-
-    def run(self):
-        r = transcode(self.infile, self.outfile, self.codec,
-                      self.opts, self.lock)
-        with self.cv:
-            self.cv.notify_all()
-        return r
-
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
@@ -317,23 +299,15 @@ def main():
     for codec in codecs:
         if not opts.silent:
             print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
-        threads = []
-        cv = threading.Condition()
         lock = threading.Lock()
-        for infile, outfile in flacfiles.items():
-            (dirs, filename) = os.path.split(outfile)
-            (froot, fext) = os.path.splitext(infile)
-            outdir = change_format_name(dirs, fext[1:].upper(), codec)
-            if opts.copyother and dirs in files_to_copy:
-                copy_other(opts, files_to_copy[dirs], outdir)
-            with cv:
-                while (threading.active_count() == max(1, opts.max_threads) + 1):
-                    cv.wait()
-                t = Transcode(infile, os.path.join(outdir, filename), codec, opts, lock, cv)
-            t.start()
-            threads.append(t)
-        for t in threads:
-            t.join()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
+            for infile, outfile in flacfiles.items():
+                (dirs, filename) = os.path.split(outfile)
+                (froot, fext) = os.path.splitext(infile)
+                outdir = change_format_name(dirs, fext[1:].upper(), codec)
+                if opts.copyother and dirs in files_to_copy:
+                    copy_other(opts, files_to_copy[dirs], outdir)
+                ex.submit(transcode, infile, os.path.join(outdir, filename), codec, opts, lock)
 
         if opts.output and opts.tracker and not opts.notorrent:
             make_torrent(opts, outdir)
