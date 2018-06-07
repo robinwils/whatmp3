@@ -254,6 +254,13 @@ def change_format_name(directory, informat, codec):
     else:
         return leading_dirs + last_dir + " (" + codec + ")"
 
+def parse_file(name, opts, dirpath, flacfiles, lock):
+    new_filename = do_rename(opts.rename, dirpath, name)
+    flacfile = os.path.join(dirpath, name)
+    with lock:
+        flacfiles[flacfile] = os.path.join(opts.output, new_filename)
+        new_dir, _ = os.path.split(flacfiles[flacfile])
+
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
@@ -265,41 +272,45 @@ def main():
     flacfiles = {}
     files_to_copy = {}
     outdir = ""
-    for flacdir in opts.flacdirs:
-        flacdir = os.path.abspath(flacdir)
-        if not os.path.exists(opts.torrent_dir):
-            os.makedirs(opts.torrent_dir)
-        for dirpath, dirs, files in os.walk(flacdir, topdown=False):
-            new_dir = ""
-            for name in files:
-                if (fnmatch(name.lower(), '*.flac')
-                   or fnmatch(name.lower(), '*.aiff')):
-                    new_filename = do_rename(opts.rename, dirpath, name)
-                    flacfile = os.path.join(dirpath, name)
-                    flacfiles[flacfile] = opts.output + new_filename
-                    new_dir, _ = os.path.split(flacfiles[flacfile])
-                    if not new_dir:
-                        new_dir, _ = os.path.split(flacfiles[flacfile])
-                elif opts.copyother and new_dir:
-                    if new_dir not in files_to_copy:
-                        files_to_copy[new_dir] = []
-                    files_to_copy[new_dir].append(os.path.join(dirpath, name))
+    lock = threading.Lock()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
+        for flacdir in opts.flacdirs:
+            flacdir = os.path.abspath(flacdir)
+            if not os.path.exists(opts.torrent_dir):
+                os.makedirs(opts.torrent_dir)
+            for dirpath, dirs, files in os.walk(flacdir, topdown=False):
+                new_dir = ""
+                for name in files:
+                    if (fnmatch(name.lower(), '*.flac')
+                       or fnmatch(name.lower(), '*.aiff')):
+                        ex.submit(parse_file, name, opts, dirpath, flacfiles, lock)
+                        #new_filename = do_rename(opts.rename, dirpath, name)
+                        #flacfile = os.path.join(dirpath, name)
+                        #flacfiles[flacfile] = opts.output + new_filename
+                        #new_dir, _ = os.path.split(flacfiles[flacfile])
+                        #if not new_dir:
+                        #    new_dir, _ = os.path.split(flacfiles[flacfile])
+                    elif opts.copyother and new_dir:
+                        print("LOL", dirpath, name)
+                        if new_dir not in files_to_copy:
+                            files_to_copy[new_dir] = []
+                        files_to_copy[new_dir].append(os.path.join(dirpath, name))
 
-        if opts.ignore and not flacfiles:
-            if not opts.silent:
-                print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
-            continue
-        if opts.original:
-            if not opts.silent:
-                print('BEGIN ORIGINAL FLAC')
-            if opts.output and opts.tracker and not opts.notorrent:
-                make_torrent(opts, flacdir)
-            if not opts.silent:
-                print('END ORIGINAL FLAC')
+            if opts.ignore and not flacfiles:
+                if not opts.silent:
+                    print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
+                continue
+            if opts.original:
+                if not opts.silent:
+                    print('BEGIN ORIGINAL FLAC')
+                if opts.output and opts.tracker and not opts.notorrent:
+                    make_torrent(opts, flacdir)
+                if not opts.silent:
+                    print('END ORIGINAL FLAC')
+    sys.exit(0)
     for codec in codecs:
         if not opts.silent:
             print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
-        lock = threading.Lock()
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
             for infile, outfile in flacfiles.items():
                 (dirs, filename) = os.path.split(outfile)
