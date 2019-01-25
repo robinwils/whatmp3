@@ -170,6 +170,56 @@ def tags_from_file(filepath):
     return tags
 
 
+def parse_m3u(opts, playlist_filename, files_to_transcode):
+    with open(playlist_filename) as playlist_file:
+        for _, line in enumerate(playlist_file):
+            if line[0] == '#':
+                continue
+            track_file = line.rstrip("\r\n")
+            if not os.path.exists(track_file) or not os.path.isfile(track_file):
+                failure(track_file, "does not exist")
+            dirpath, filename = os.path.split(track_file)
+
+            # rename with pattern that is only the filename, to get all files in the same folder
+            new_filename = do_rename(opts.rename if opts.rename else "%f%", dirpath, filename)
+            files_to_transcode[track_file] = os.path.join(opts.output, new_filename)
+    print(files_to_transcode)
+
+
+def parse_folder(opts, folder, files_to_transcode, files_to_copy):
+    folder = os.path.abspath(folder)
+    if not os.path.exists(opts.torrent_dir):
+        os.makedirs(opts.torrent_dir)
+    for dirpath, _, files in os.walk(folder, topdown=False):
+        new_dir = ""
+        for name in files:
+            if (fnmatch(name.lower(), '*.flac')
+                or fnmatch(name.lower(), '*.aiff')):
+                new_filename = do_rename(opts.rename, dirpath, name)
+                if not new_filename:
+                    continue
+                flacfile = os.path.join(dirpath, name)
+                files_to_transcode[flacfile] = os.path.join(opts.output, new_filename)
+                new_dir, _ = os.path.split(files_to_transcode[flacfile])
+                if not new_dir:
+                    new_dir, _ = os.path.split(files_to_transcode[flacfile])
+            elif opts.copyother and new_dir:
+                if new_dir not in files_to_copy:
+                    files_to_copy[new_dir] = []
+                files_to_copy[new_dir].append(os.path.join(dirpath, name))
+
+    if opts.ignore and not files_to_transcode:
+        if not opts.silent:
+            print("SKIP (no flacs in): %s" % (os.path.relpath(folder)))
+        return
+    if opts.original:
+        if not opts.silent:
+            print('BEGIN ORIGINAL FLAC')
+        if opts.output and opts.tracker and not opts.notorrent:
+            make_torrent(opts, folder)
+        if not opts.silent:
+            print('END ORIGINAL FLAC')
+
 def copy_other(opts, files, outdir):
     if opts.verbose:
         print('COPYING other files')
@@ -257,8 +307,8 @@ def setup_parser():
     for enc_opt in enc_opts.keys():
         p.add_argument("--" + enc_opt, action=EncoderArg, nargs=0,
                        help='convert to %s' % (enc_opt))
-    p.add_argument('flacdirs', nargs='+', metavar='flacdir',
-                   help='directories to transcode')
+    p.add_argument('sources', nargs='+', metavar='source',
+                   help='directories or playlists to transcode')
     return p
 
 def system(cmd):
@@ -307,48 +357,20 @@ def main():
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
         exit()
-    flacfiles = {}
+    files_to_transcode = {}
     files_to_copy = {}
     outdir = ""
-    for flacdir in opts.flacdirs:
-        flacdir = os.path.abspath(flacdir)
-        if not os.path.exists(opts.torrent_dir):
-            os.makedirs(opts.torrent_dir)
-        for dirpath, dirs, files in os.walk(flacdir, topdown=False):
-            new_dir = ""
-            for name in files:
-                if (fnmatch(name.lower(), '*.flac')
-                   or fnmatch(name.lower(), '*.aiff')):
-                    new_filename = do_rename(opts.rename, dirpath, name)
-                    if not new_filename:
-                        continue
-                    flacfile = os.path.join(dirpath, name)
-                    flacfiles[flacfile] = os.path.join(opts.output, new_filename)
-                    new_dir, _ = os.path.split(flacfiles[flacfile])
-                    if not new_dir:
-                        new_dir, _ = os.path.split(flacfiles[flacfile])
-                elif opts.copyother and new_dir:
-                    if new_dir not in files_to_copy:
-                        files_to_copy[new_dir] = []
-                    files_to_copy[new_dir].append(os.path.join(dirpath, name))
-
-        if opts.ignore and not flacfiles:
-            if not opts.silent:
-                print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
-            continue
-        if opts.original:
-            if not opts.silent:
-                print('BEGIN ORIGINAL FLAC')
-            if opts.output and opts.tracker and not opts.notorrent:
-                make_torrent(opts, flacdir)
-            if not opts.silent:
-                print('END ORIGINAL FLAC')
+    for flacdir in opts.sources:
+        if os.path.isfile(flacdir):
+            parse_m3u(opts, flacdir, files_to_transcode)
+        else:
+            parse_folder(opts, flacdir, files_to_transcode, files_to_copy)
     for codec in codecs:
         if not opts.silent:
             print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
         lock = threading.Lock()
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
-            for infile, outfile in flacfiles.items():
+            for infile, outfile in files_to_transcode.items():
                 (dirs, filename) = os.path.split(outfile)
                 _, fext = os.path.splitext(infile)
                 out_filename, _ = os.path.splitext(filename)
