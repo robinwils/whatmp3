@@ -178,8 +178,12 @@ def parse_m3u(opts, playlist_filename, files_to_transcode):
             if line[0] == '#':
                 continue
             track_file = line.rstrip("\r\n")
+            if (not fnmatch(track_file.lower(), '*.flac')
+                and not fnmatch(track_file.lower(), '*.aiff')):
+                continue
             if not os.path.exists(track_file) or not os.path.isfile(track_file):
                 failure(track_file, "does not exist")
+                continue
             dirpath, filename = os.path.split(track_file)
 
             # rename with pattern that is only the filename, to get all files in the same folder
@@ -212,7 +216,7 @@ def parse_folder(opts, folder, files_to_transcode, files_to_copy):
 
     if opts.ignore and not files_to_transcode:
         if not opts.silent:
-            print("SKIP (no flacs in): %s" % (os.path.relpath(folder)))
+            print("SKIP (no flacs in): %s" % folder)
         return
     if opts.original:
         if not opts.silent:
@@ -253,7 +257,7 @@ def failure(r, msg):
 
 def make_torrent(opts, target):
     if opts.verbose:
-        print('MAKE: %s.torrent' % os.path.relpath(target))
+        print('MAKE: %s.torrent' % target)
     torrent_cmd = "mktorrent -p -a '%s' -o %s.torrent %s 2>&1" % (
         opts.tracker, escape_str_arg(os.path.join(opts.torrent_dir,
                                    os.path.basename(target))),
@@ -321,8 +325,7 @@ def transcode(infile, outfile, codec, opts, lock):
     with lock:
         os.makedirs(os.path.dirname(outname), exist_ok=True)
     if os.path.exists(outname) and not opts.overwrite:
-        print("WARN: file %s already exists" % (os.path.relpath(outname)),
-              file=sys.stderr)
+        print("WARN: file %s already exists" % outname, file=sys.stderr)
         return 1
     flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
@@ -369,7 +372,7 @@ def main():
             parse_folder(opts, flacdir, files_to_transcode, files_to_copy)
     for codec in codecs:
         if not opts.silent:
-            print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
+            print('BEGIN ' + codec + ': %s' % flacdir)
         lock = threading.Lock()
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
             for infile, outfile in files_to_transcode.items():
@@ -384,9 +387,9 @@ def main():
         if opts.output and opts.tracker and not opts.notorrent:
             make_torrent(opts, outdir)
         if not opts.silent:
-            print('END ' + codec + ': %s' % os.path.relpath(flacdir))
+            print('END ' + codec + ': %s' % flacdir)
 
-        if opts.verbose: print('ALL DONE: ' + os.path.relpath(flacdir))
+        if opts.verbose: print('ALL DONE: ' + flacdir)
     return 0
 
 if __name__ == '__main__':
