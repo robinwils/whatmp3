@@ -279,6 +279,8 @@ def main():
                 if (fnmatch(name.lower(), '*.flac')
                    or fnmatch(name.lower(), '*.aiff')):
                     new_filename = do_rename(opts.rename, dirpath, name)
+                    if not new_filename:
+                        continue
                     flacfile = os.path.join(dirpath, name)
                     flacfiles[flacfile] = opts.output + new_filename
                     new_dir, _ = os.path.split(flacfiles[flacfile])
