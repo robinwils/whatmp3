@@ -86,7 +86,9 @@ enc_opts = {
     'Q8':   {'ext': '.ogg',  'opts': '-c:a libvorbis -qscale:a 8'},
     'AAC':  {'ext': '.m4a',  'opts': '-c:a aac -b:a 320k -movflags +faststart'},
     'ALAC': {'ext': '.m4a',  'opts': '-c:a alac'},
-    'FLAC': {'ext': '.flac', 'opts': '-c:a flac -compression_level 8 -sample_fmt s16 -ar 44100'}
+    'FLAC': {'ext': '.flac', 'opts': '-c:a flac -compression_level 8 -sample_fmt s16 -ar 44100'},
+    'WAV':  {'ext': '.wav',  'opts': ''},
+    'AIFF': {'ext': '.aiff', 'opts': '-map_metadata 0 -write_id3v2 1'}
 }
 
 ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
