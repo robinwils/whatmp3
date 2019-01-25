@@ -11,6 +11,44 @@ from fnmatch import fnmatch
 import concurrent.futures
 import shlex
 
+def escape_argument_win(arg):
+    # Escape the argument for the cmd.exe shell.
+    # See http://blogs.msdn.com/b/twistylittlepassagesallalike/archive/2011/04/23/everyone-quotes-arguments-the-wrong-way.aspx
+    #
+    # First we escape the quote chars to produce a argument suitable for
+    # CommandLineToArgvW. We don't need to do this for simple arguments.
+
+    if not arg or re.search(r'(["\s])', arg):
+        arg = '"' + arg.replace('"', r'\"') + '"'
+
+    return escape_for_cmd_exe(arg)
+
+def escape_for_cmd_exe(arg):
+    # Escape an argument string to be suitable to be passed to
+    # cmd.exe on Windows
+    #
+    # This method takes an argument that is expected to already be properly
+    # escaped for the receiving program to be properly parsed. This argument
+    # will be further escaped to pass the interpolation performed by cmd.exe
+    # unchanged.
+    #
+    # Any meta-characters will be escaped, removing the ability to e.g. use
+    # redirects or variables.
+    #
+    # @param arg [String] a single command line argument to escape for cmd.exe
+    # @return [String] an escaped string suitable to be passed as a program
+    #   argument to cmd.exe
+
+    meta_chars = '()%!^"<>&|'
+    meta_re = re.compile('(' + '|'.join(re.escape(char) for char in list(meta_chars)) + ')')
+    meta_map = { char: "^%s" % char for char in meta_chars }
+
+    def escape_meta_chars(m):
+        char = m.group(1)
+        return meta_map[char]
+
+    return meta_re.sub(escape_meta_chars, arg)
+
 VERSION = "3.8"
 
 # DEFAULT CONFIGURATION
@@ -32,6 +70,12 @@ tracker = None
 max_threads = multiprocessing.cpu_count()
 
 copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'GENRE', 'COMMENT', 'DATE', 'TRACK')
+
+# NULL device for error redirections
+dev_null = "NUL" if os.name == "nt" else "/dev/null"
+
+# Escape function
+escape_str_arg = escape_argument_win if os.name == "nt" else shlex.quote
 
 # Default encoding options
 enc_opts = {
@@ -85,8 +129,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
         elif placeholder == 'f':
             new_filename += filename
         elif placeholder == 'd':
-            new_filename += (dirname if '/' not in dirname
-                    else dirname[dirname.rfind('/') + 1:])
+            new_filename += os.path.split(dirname)[1]
 
         index = match.end()
     if index < len(pattern):
@@ -95,9 +138,9 @@ def filename_from_tags(pattern, tags, dirname, filename):
 
 def do_rename(rename_pattern, dirname, filename):
     if not rename_pattern:
-        rename_pattern = "%d%/%f%"
+        rename_pattern = os.path.join("%d%", "%f%")
 
-    tags = tags_from_file(dirname + "/" + filename)
+    tags = tags_from_file(os.path.join(dirname, filename))
     try:
         tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
     except KeyError as key_error:
@@ -116,7 +159,7 @@ def tags_from_file(filepath):
     # this is consistent with any file format though
     # result is one tag per line, like that:
     # TAG=val
-    tagcmd = "ffmpeg -i {} -f ffmetadata - 2> /dev/null".format(shlex.quote(filepath))
+    tagcmd = "ffmpeg -i {} -f ffmetadata - 2> {}".format(escape_str_arg(filepath), dev_null)
     for line in os.popen(tagcmd).read().rstrip().splitlines():
         tag = line.split("=")
         if len(tag) != 2 or tag[0].upper() not in copy_tags:
@@ -160,16 +203,16 @@ def make_torrent(opts, target):
     if opts.verbose:
         print('MAKE: %s.torrent' % os.path.relpath(target))
     torrent_cmd = "mktorrent -p -a '%s' -o %s.torrent %s 2>&1" % (
-        opts.tracker, shlex.quote(os.path.join(opts.torrent_dir,
+        opts.tracker, escape_str_arg(os.path.join(opts.torrent_dir,
                                    os.path.basename(target))),
-        shlex.quote(target)
+        escape_str_arg(target)
     )
     if opts.additional:
         torrent_cmd += ' ' + opts.additional
     if opts.nodate:
         torrent_cmd += ' -d'
     if not opts.verbose:
-        torrent_cmd += ' >/dev/null'
+        torrent_cmd += dev_null
     if opts.verbose:
         print(torrent_cmd)
     r = system(torrent_cmd)
@@ -231,8 +274,8 @@ def transcode(infile, outfile, codec, opts, lock):
         return 1
     flac_cmd = ffmpeg_cmd % {
         'opts': enc_opts[codec]['opts'],
-        'infile': escape_percent(shlex.quote(infile)),
-        'filename': shlex.quote(outname),
+        'infile': escape_percent(escape_str_arg(infile)),
+        'filename': escape_str_arg(outname),
     }
     outname = os.path.basename(outname)
     if not opts.silent:
@@ -261,8 +304,6 @@ def change_format_name(directory, informat, codec):
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
-    if not opts.output.endswith('/'):
-        opts.output += '/'
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
         exit()
@@ -282,7 +323,7 @@ def main():
                     if not new_filename:
                         continue
                     flacfile = os.path.join(dirpath, name)
-                    flacfiles[flacfile] = opts.output + new_filename
+                    flacfiles[flacfile] = os.path.join(opts.output, new_filename)
                     new_dir, _ = os.path.split(flacfiles[flacfile])
                     if not new_dir:
                         new_dir, _ = os.path.split(flacfiles[flacfile])
