@@ -73,7 +73,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
             print("error: unknown placeholder " + placeholder)
             return None
         if len(placeholders[placeholder]) != 0 and placeholders[placeholder] not in tags:
-            print("error: no " + placeholders[placeholder] + " tag")
+            print("error: " + filename + " no " + placeholders[placeholder] + " tag")
             print(tags)
             return None
         elif len(placeholders[placeholder]) == 0:
@@ -98,7 +98,11 @@ def do_rename(rename_pattern, dirname, filename):
         rename_pattern = "%d%/%f%"
 
     tags = tags_from_file(dirname + "/" + filename)
-    tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    try:
+        tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    except KeyError as key_error:
+        failure(1, "{} is missing the TRACK tag".format(filename))
+
     # the new filename is only the filename (not including the leading directory)
     # filename can conatin directories, we need to create the non existing ones
     return filename_from_tags(rename_pattern, tags, dirname, filename)
