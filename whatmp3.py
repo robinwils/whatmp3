@@ -350,11 +350,12 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
             for infile, outfile in flacfiles.items():
                 (dirs, filename) = os.path.split(outfile)
-                (froot, fext) = os.path.splitext(infile)
+                _, fext = os.path.splitext(infile)
+                out_filename, _ = os.path.splitext(filename)
                 outdir = change_format_name(dirs, fext[1:].upper(), codec)
                 if opts.copyother and dirs in files_to_copy:
                     copy_other(opts, files_to_copy[dirs], outdir)
-                ex.submit(transcode, infile, os.path.join(outdir, filename), codec, opts, lock)
+                ex.submit(transcode, infile, os.path.join(outdir, out_filename), codec, opts, lock)
 
         if opts.output and opts.tracker and not opts.notorrent:
             make_torrent(opts, outdir)
