@@ -151,6 +151,7 @@ class TranscodeTask(Task):
             print("Encoding", os.path.basename(self.source), "to", dest_fullpath)
 
         proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        proc.communicate()
         return 0
 
 
