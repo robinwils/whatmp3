@@ -81,20 +81,17 @@ escape_str_arg = escape_argument_win if os.name == "nt" else shlex.quote
 
 # Default encoding options
 enc_opts = {
-    '320':  {'ext': '.mp3',  'opts': '-b:a 320k'},
-    'V0':   {'ext': '.mp3',  'opts': '-q:a 0'},
-    'V2':   {'ext': '.mp3',  'opts': '-q:a 2'},
-    'V8':   {'ext': '.mp3',  'opts': '-q:a 8'},
-    'Q8':   {'ext': '.ogg',  'opts': '-c:a libvorbis -qscale:a 8'},
-    'AAC':  {'ext': '.m4a',  'opts': '-c:a aac -b:a 320k -movflags +faststart'},
-    'ALAC': {'ext': '.m4a',  'opts': '-c:a alac'},
-    'FLAC': {'ext': '.flac', 'opts': '-c:a flac -compression_level 8 -sample_fmt s16 -ar 44100'},
-    'WAV':  {'ext': '.wav',  'opts': ''},
-    'AIFF': {'ext': '.aiff', 'opts': '-map_metadata 0 -write_id3v2 1'}
+    '320':  {'ext': '.mp3',  'opts': ['-b:a', '320k'] },
+    'V0':   {'ext': '.mp3',  'opts': ['-q:a', '0'] },
+    'V2':   {'ext': '.mp3',  'opts': ['-q:a', '2'] },
+    'V8':   {'ext': '.mp3',  'opts': ['-q:a', '8'] },
+    'Q8':   {'ext': '.ogg',  'opts': ['-c:a', 'libvorbis', '-qscale:a', '8'] },
+    'AAC':  {'ext': '.m4a',  'opts': ['-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart'] },
+    'ALAC': {'ext': '.m4a',  'opts': ['-c:a', 'alac'] },
+    'FLAC': {'ext': '.flac', 'opts': ['-c:a', 'flac', '-compression_level', '8', '-sample_fmt', 's16', '-ar', '44100'] },
+    'WAV':  {'ext': '.wav',  'opts': [] },
+    'AIFF': {'ext': '.aiff', 'opts': ['-map_metadata', '0', '-write_id3v2', '1'] }
 }
-
-ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
-
 # END CONFIGURATION
 
 codecs = []
@@ -122,13 +119,13 @@ class Task(ABC):
 
 
 class TranscodeTask(Task):
-    ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
     def __init__(self, source, destination, codec, rename_pattern):
         self.source = source
         # output folder
         self.destination = destination
         self.codec = codec
         self.rename_pattern = rename_pattern
+        self.cmd = ["ffmpeg", "-hide_banner", "-v", "warning", "-stats", "-i"]
 
     def execute(self, opts, lock):
         dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
@@ -146,15 +143,14 @@ class TranscodeTask(Task):
             print("WARN: file %s already exists" % dest_fullpath, file=sys.stderr)
             return 1
 
-        enc_cmd = ffmpeg_cmd % {
-            'opts': enc_opts[self.codec]['opts'],
-            'infile': escape_percent(escape_str_arg(self.source)),
-            'filename': escape_str_arg(dest_fullpath),
-        }
+        self.cmd.append(self.source)
+        self.cmd += enc_opts[self.codec]['opts']
+        self.cmd.append(dest_fullpath)
 
-        r = system(enc_cmd)
-        if r:
-            failure(r, "error encoding %s" % self.source)
+        if opts.verbose:
+            print("Encoding", os.path.basename(self.source), "to", dest_fullpath)
+
+        proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         return 0
 
 
@@ -240,8 +236,10 @@ def tags_from_file(filepath):
     # this is consistent with any file format though
     # result is one tag per line, like that:
     # TAG=val
-    tagcmd = "ffmpeg -i {} -f ffmetadata - 2> {}".format(escape_str_arg(filepath), dev_null)
-    for line in os.popen(tagcmd).read().rstrip().splitlines():
+    tagcmd = ["ffmpeg", "-i", filepath, "-f", "ffmetadata", "-"]
+    proc = subprocess.Popen(tagcmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc_out, _ = proc.communicate()
+    for line in proc_out.decode("UTF-8").split("\n"):
         tag = line.split("=")
         if len(tag) != 2 or tag[0].upper() not in copy_tags:
             continue
