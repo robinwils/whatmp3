@@ -212,6 +212,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
         index = match.end()
     if index < len(pattern):
         new_filename += escape_percent(pattern[index:])
+    new_filename += os.path.splitext(filename)[1]
     return new_filename % tags
 
 
