@@ -7,9 +7,49 @@ import re
 import shutil
 import sys
 import threading
+import subprocess
 from fnmatch import fnmatch
+from abc import ABC, abstractmethod
 import concurrent.futures
 import shlex
+
+def escape_argument_win(arg):
+    # Escape the argument for the cmd.exe shell.
+    # See http://blogs.msdn.com/b/twistylittlepassagesallalike/archive/2011/04/23/everyone-quotes-arguments-the-wrong-way.aspx
+    #
+    # First we escape the quote chars to produce a argument suitable for
+    # CommandLineToArgvW. We don't need to do this for simple arguments.
+
+    if not arg or re.search(r'(["\s])', arg):
+        arg = '"' + arg.replace('"', r'\"') + '"'
+
+    return escape_for_cmd_exe(arg)
+
+def escape_for_cmd_exe(arg):
+    # Escape an argument string to be suitable to be passed to
+    # cmd.exe on Windows
+    #
+    # This method takes an argument that is expected to already be properly
+    # escaped for the receiving program to be properly parsed. This argument
+    # will be further escaped to pass the interpolation performed by cmd.exe
+    # unchanged.
+    #
+    # Any meta-characters will be escaped, removing the ability to e.g. use
+    # redirects or variables.
+    #
+    # @param arg [String] a single command line argument to escape for cmd.exe
+    # @return [String] an escaped string suitable to be passed as a program
+    #   argument to cmd.exe
+
+    meta_chars = '()%!^"<>&|'
+    meta_re = re.compile('(' + '|'.join(re.escape(char) for char in list(meta_chars)) + ')')
+    meta_map = { char: "^%s" % char for char in meta_chars }
+
+    def escape_meta_chars(m):
+        char = m.group(1)
+        return meta_map[char]
+
+    return meta_re.sub(escape_meta_chars, arg)
 
 VERSION = "3.8"
 
@@ -33,20 +73,25 @@ max_threads = multiprocessing.cpu_count()
 
 copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'GENRE', 'COMMENT', 'DATE', 'TRACK')
 
+# NULL device for error redirections
+dev_null = "NUL" if os.name == "nt" else "/dev/null"
+
+# Escape function
+escape_str_arg = escape_argument_win if os.name == "nt" else shlex.quote
+
 # Default encoding options
 enc_opts = {
-    '320':  {'ext': '.mp3',  'opts': '-b:a 320k'},
-    'V0':   {'ext': '.mp3',  'opts': '-q:a 0'},
-    'V2':   {'ext': '.mp3',  'opts': '-q:a 2'},
-    'V8':   {'ext': '.mp3',  'opts': '-q:a 8'},
-    'Q8':   {'ext': '.ogg',  'opts': '-c:a libvorbis -qscale:a 8'},
-    'AAC':  {'ext': '.m4a',  'opts': '-c:a aac -b:a 320k -movflags +faststart'},
-    'ALAC': {'ext': '.m4a',  'opts': '-c:a alac'},
-    'FLAC': {'ext': '.flac', 'opts': '-c:a flac -compression_level 8 -sample_fmt s16 -ar 44100'}
+    '320':  {'ext': '.mp3',  'opts': ['-b:a', '320k'] },
+    'V0':   {'ext': '.mp3',  'opts': ['-q:a', '0'] },
+    'V2':   {'ext': '.mp3',  'opts': ['-q:a', '2'] },
+    'V8':   {'ext': '.mp3',  'opts': ['-q:a', '8'] },
+    'Q8':   {'ext': '.ogg',  'opts': ['-c:a', 'libvorbis', '-qscale:a', '8'] },
+    'AAC':  {'ext': '.m4a',  'opts': ['-c:a', 'aac', '-b:a', '320k', '-movflags', '+faststart'] },
+    'ALAC': {'ext': '.m4a',  'opts': ['-c:a', 'alac'] },
+    'FLAC': {'ext': '.flac', 'opts': ['-c:a', 'flac', '-compression_level', '8', '-sample_fmt', 's16', '-ar', '44100'] },
+    'WAV':  {'ext': '.wav',  'opts': [] },
+    'AIFF': {'ext': '.aiff', 'opts': ['-map_metadata', '0', '-write_id3v2', '1'] }
 }
-
-ffmpeg_cmd = "ffmpeg -hide_banner -v warning -stats -i %(infile)s %(opts)s %(filename)s 2>&1"
-
 # END CONFIGURATION
 
 codecs = []
@@ -58,6 +103,83 @@ placeholders = {
     'f': '',
     'd': '',
 }
+
+
+def is_audio_file(filename):
+    return os.path.splitext(filename)[1].lower() in [".mp3", ".flac", ".m4a", ".wav", ".aiff", ".ogg"]
+
+
+class Task(ABC):
+    def __init__(self):
+        pass
+
+    @abstractmethod
+    def execute(self, opts, lock):
+        pass
+
+
+class TranscodeTask(Task):
+    def __init__(self, source, destination, codec, rename_pattern):
+        self.source = source
+        # output folder
+        self.destination = destination
+        self.codec = codec
+        self.rename_pattern = rename_pattern
+        self.cmd = ["ffmpeg", "-hide_banner", "-v", "warning", "-stats", "-i"]
+
+    def execute(self, opts, lock):
+        dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+        dest_fullpath = os.path.join(self.destination, dest_filename)
+
+        # replace or add format name in directory
+        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+
+        dest_fullpath = os.path.splitext(dest_fullpath)[0] + enc_opts[self.codec]['ext']
+
+        with lock:
+            os.makedirs(os.path.dirname(dest_fullpath), exist_ok=True)
+
+        if os.path.exists(dest_fullpath) and not opts.overwrite:
+            print("WARN: file %s already exists" % dest_fullpath, file=sys.stderr)
+            return 1
+
+        self.cmd.append(self.source)
+        self.cmd += enc_opts[self.codec]['opts']
+        self.cmd.append(dest_fullpath)
+
+        if opts.verbose:
+            print("Encoding", os.path.basename(self.source), "to", dest_fullpath)
+
+        proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        proc.communicate()
+        return 0
+
+
+class CopyTask(Task):
+    def __init__(self, source, destination, codec, rename_pattern):
+        self.source = source
+        self.destination = destination
+        self.codec = codec
+        self.rename_pattern = rename_pattern
+
+    def execute(self, opts, lock):
+        dest_fullpath = ""
+        if is_audio_file(self.source):
+            dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+            dest_fullpath = os.path.join(self.destination, dest_filename)
+            dest_fullpath = os.path.splitext(dest_fullpath)[0] + os.path.splitext(self.source)[1]
+        else:
+            dest_folder, dest_filename = os.path.split(self.source)
+            dest_fullpath = os.path.join(self.destination, os.path.basename(dest_folder), dest_filename)
+        # replace or add format name in directory
+        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+
+        with lock:
+            os.makedirs(os.path.dirname(dest_fullpath), exist_ok=True)
+
+        shutil.copy(self.source, dest_fullpath)
+        return 0
+
 
 def filename_from_tags(pattern, tags, dirname, filename):
     if tags is None:
@@ -73,7 +195,7 @@ def filename_from_tags(pattern, tags, dirname, filename):
             print("error: unknown placeholder " + placeholder)
             return None
         if len(placeholders[placeholder]) != 0 and placeholders[placeholder] not in tags:
-            print("error: no " + placeholders[placeholder] + " tag")
+            print("error: " + filename + " no " + placeholders[placeholder] + " tag")
             print(tags)
             return None
         elif len(placeholders[placeholder]) == 0:
@@ -85,24 +207,28 @@ def filename_from_tags(pattern, tags, dirname, filename):
         elif placeholder == 'f':
             new_filename += filename
         elif placeholder == 'd':
-            new_filename += (dirname if '/' not in dirname
-                    else dirname[dirname.rfind('/') + 1:])
+            new_filename += os.path.split(dirname)[1]
 
         index = match.end()
     if index < len(pattern):
         new_filename += escape_percent(pattern[index:])
+    new_filename += os.path.splitext(filename)[1]
     return new_filename % tags
+
 
 def do_rename(rename_pattern, dirname, filename):
     if not rename_pattern:
-        rename_pattern = "%d%/%f%"
+        rename_pattern = os.path.join("%d%", "%f%")
 
-    tags = tags_from_file(dirname + "/" + filename)
-    tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    tags = tags_from_file(os.path.join(dirname, filename))
+    try:
+        tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    except KeyError as _:
+        failure(1, "{} is missing the TRACK tag".format(filename))
+
     # the new filename is only the filename (not including the leading directory)
     # filename can conatin directories, we need to create the non existing ones
     return filename_from_tags(rename_pattern, tags, dirname, filename)
-
 
 
 def tags_from_file(filepath):
@@ -112,8 +238,10 @@ def tags_from_file(filepath):
     # this is consistent with any file format though
     # result is one tag per line, like that:
     # TAG=val
-    tagcmd = "ffmpeg -i {} -f ffmetadata - 2> /dev/null".format(shlex.quote(filepath))
-    for line in os.popen(tagcmd).read().rstrip().splitlines():
+    tagcmd = ["ffmpeg", "-i", filepath, "-f", "ffmetadata", "-"]
+    proc = subprocess.Popen(tagcmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc_out, _ = proc.communicate()
+    for line in proc_out.decode("UTF-8").split("\n"):
         tag = line.split("=")
         if len(tag) != 2 or tag[0].upper() not in copy_tags:
             continue
@@ -123,53 +251,41 @@ def tags_from_file(filepath):
     return tags
 
 
-def copy_other(opts, files, outdir):
-    if opts.verbose:
-        print('COPYING other files')
-    for name in files:
-        if opts.nolog and fnmatch(name.lower(), '*.log'):
-            continue
-        if opts.nocue and fnmatch(name.lower(), '*.cue'):
-            continue
-        if opts.nodots and fnmatch(name.lower(), '^.'):
-            continue
-        if (not fnmatch(name.lower(), '*.flac')
-           and not fnmatch(name.lower(), '*.m3u')):
-            if not os.path.exists(outdir):
-                os.makedirs(outdir)
-            shutil.copy(name, os.path.join(outdir, os.path.split(name)[1]))
-
 class EncoderArg(argparse.Action):
     def __init__(self, option_strings, dest, nargs=None, **kwargs):
         super(EncoderArg, self).__init__(option_strings, dest, nargs, **kwargs)
     def __call__(self, parser, namespace, values, option_string=None):
         codecs.append(option_string[2:])
 
+
 def escape_percent(pattern):
     pattern = re.sub('%', '%%', pattern)
     return pattern
 
+
 def failure(r, msg):
     print("ERROR: %s: %s" % (r, msg), file=sys.stderr)
 
+
 def make_torrent(opts, target):
     if opts.verbose:
-        print('MAKE: %s.torrent' % os.path.relpath(target))
+        print('MAKE: %s.torrent' % target)
     torrent_cmd = "mktorrent -p -a '%s' -o %s.torrent %s 2>&1" % (
-        opts.tracker, shlex.quote(os.path.join(opts.torrent_dir,
+        opts.tracker, escape_str_arg(os.path.join(opts.torrent_dir,
                                    os.path.basename(target))),
-        shlex.quote(target)
+        escape_str_arg(target)
     )
     if opts.additional:
         torrent_cmd += ' ' + opts.additional
     if opts.nodate:
         torrent_cmd += ' -d'
     if not opts.verbose:
-        torrent_cmd += ' >/dev/null'
+        torrent_cmd += dev_null
     if opts.verbose:
         print(torrent_cmd)
     r = system(torrent_cmd)
     if r: failure(r, torrent_cmd)
+
 
 def setup_parser():
     p = argparse.ArgumentParser(
@@ -210,112 +326,77 @@ def setup_parser():
     for enc_opt in enc_opts.keys():
         p.add_argument("--" + enc_opt, action=EncoderArg, nargs=0,
                        help='convert to %s' % (enc_opt))
-    p.add_argument('flacdirs', nargs='+', metavar='flacdir',
-                   help='directories to transcode')
+    p.add_argument('sources', nargs='+', metavar='source',
+                   help='directories or playlists to transcode')
     return p
+
 
 def system(cmd):
     return os.system(cmd)
 
-def transcode(infile, outfile, codec, opts, lock):
-    outname = outfile + enc_opts[codec]['ext']
-    with lock:
-        os.makedirs(os.path.dirname(outname), exist_ok=True)
-    if os.path.exists(outname) and not opts.overwrite:
-        print("WARN: file %s already exists" % (os.path.relpath(outname)),
-              file=sys.stderr)
-        return 1
-    flac_cmd = ffmpeg_cmd % {
-        'opts': enc_opts[codec]['opts'],
-        'infile': escape_percent(shlex.quote(infile)),
-        'filename': shlex.quote(outname),
-    }
-    outname = os.path.basename(outname)
-    if not opts.silent:
-        print("encoding %s" % outname)
-    if opts.verbose:
-        print(flac_cmd)
-    r = system(flac_cmd)
-    if r:
-        failure(r, "error encoding %s" % outname)
-        system("touch '%s/FAILURE'" % outfile)
-    return 0
 
+def change_format_name(file_fullpath, codec):
+    directory_fullpath, filename = os.path.split(file_fullpath)
+    leading_dirs, last_dir = os.path.split(directory_fullpath)
 
-def change_format_name(directory, informat, codec):
-    directory = directory.rstrip('/')
-    last_slash_idx = directory.rfind('/')
-    leading_dirs = directory[0:last_slash_idx + 1]
-    last_dir = directory[last_slash_idx + 1:]
-
-    flacre = re.compile(informat, re.IGNORECASE)
+    flacre = re.compile("FLAC|AIFF", re.IGNORECASE)
     if flacre.search(last_dir):
-        return leading_dirs + flacre.sub(codec, last_dir)
+        return os.path.join(leading_dirs, flacre.sub(codec, last_dir), filename)
     else:
-        return leading_dirs + last_dir + " (" + codec + ")"
+        return os.path.join(leading_dirs, last_dir + " (" + codec + ")", filename)
+
+
+def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock):
+    if fnmatch(filename_fullpath.lower(), "*.flac") or fnmatch(filename_fullpath.lower(), "*.aiff"):
+        transcode_task = TranscodeTask(filename_fullpath, opts.output, codec, opts.rename)
+        thread_ex.submit(transcode_task.execute, opts, lock)
+    else:
+        copy_task = CopyTask(filename_fullpath, opts.output, codec, opts.rename)
+        thread_ex.submit(copy_task.execute, opts, lock)
+
+
+def parse_folder(folder, thread_ex, codec, opts, lock):
+    folder = os.path.abspath(folder)
+    if not os.path.exists(opts.torrent_dir):
+        os.makedirs(opts.torrent_dir)
+    for dirpath, _, files in os.walk(folder, topdown=False):
+        for filename in files:
+            task_dispatch(os.path.join(dirpath, filename), thread_ex, codec, opts, lock)
+
+def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
+    with open(playlist_filename) as playlist_file:
+        for _, line in enumerate(playlist_file):
+            if line[0] == '#':
+                continue
+            track_file = line.rstrip("\r\n")
+            if not is_audio_file(track_file):
+                continue
+            if not os.path.exists(track_file) or not os.path.isfile(track_file):
+                failure(track_file, "does not exist")
+                continue
+
+            opts.rename = opts.rename if opts.rename else "%f%"
+
+            task_dispatch(track_file, thread_ex, codec, opts, lock)
+
 
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
-    if not opts.output.endswith('/'):
-        opts.output += '/'
+
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
         exit()
-    flacfiles = {}
-    files_to_copy = {}
-    outdir = ""
-    for flacdir in opts.flacdirs:
-        flacdir = os.path.abspath(flacdir)
-        if not os.path.exists(opts.torrent_dir):
-            os.makedirs(opts.torrent_dir)
-        for dirpath, dirs, files in os.walk(flacdir, topdown=False):
-            new_dir = ""
-            for name in files:
-                if (fnmatch(name.lower(), '*.flac')
-                   or fnmatch(name.lower(), '*.aiff')):
-                    new_filename = do_rename(opts.rename, dirpath, name)
-                    flacfile = os.path.join(dirpath, name)
-                    flacfiles[flacfile] = opts.output + new_filename
-                    new_dir, _ = os.path.split(flacfiles[flacfile])
-                    if not new_dir:
-                        new_dir, _ = os.path.split(flacfiles[flacfile])
-                elif opts.copyother and new_dir:
-                    if new_dir not in files_to_copy:
-                        files_to_copy[new_dir] = []
-                    files_to_copy[new_dir].append(os.path.join(dirpath, name))
 
-        if opts.ignore and not flacfiles:
-            if not opts.silent:
-                print("SKIP (no flacs in): %s" % (os.path.relpath(flacdir)))
-            continue
-        if opts.original:
-            if not opts.silent:
-                print('BEGIN ORIGINAL FLAC')
-            if opts.output and opts.tracker and not opts.notorrent:
-                make_torrent(opts, flacdir)
-            if not opts.silent:
-                print('END ORIGINAL FLAC')
-    for codec in codecs:
-        if not opts.silent:
-            print('BEGIN ' + codec + ': %s' % os.path.relpath(flacdir))
-        lock = threading.Lock()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as ex:
-            for infile, outfile in flacfiles.items():
-                (dirs, filename) = os.path.split(outfile)
-                (froot, fext) = os.path.splitext(infile)
-                outdir = change_format_name(dirs, fext[1:].upper(), codec)
-                if opts.copyother and dirs in files_to_copy:
-                    copy_other(opts, files_to_copy[dirs], outdir)
-                ex.submit(transcode, infile, os.path.join(outdir, filename), codec, opts, lock)
+    lock = threading.Lock()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as thread_ex:
+        for codec in codecs:
+            for source_dir in opts.sources:
+                if os.path.isfile(source_dir):
+                    parse_m3u(source_dir, thread_ex, codec, opts, lock)
+                else:
+                    parse_folder(source_dir, thread_ex, codec, opts, lock)
 
-        if opts.output and opts.tracker and not opts.notorrent:
-            make_torrent(opts, outdir)
-        if not opts.silent:
-            print('END ' + codec + ': %s' % os.path.relpath(flacdir))
-
-        if opts.verbose: print('ALL DONE: ' + os.path.relpath(flacdir))
-    return 0
 
 if __name__ == '__main__':
     main()
