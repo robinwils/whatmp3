@@ -73,9 +73,6 @@ max_threads = multiprocessing.cpu_count()
 
 copy_tags = ('TITLE', 'ALBUM', 'ARTIST', 'GENRE', 'COMMENT', 'DATE', 'TRACK')
 
-# NULL device for error redirections
-dev_null = "NUL" if os.name == "nt" else "/dev/null"
-
 # Escape function
 escape_str_arg = escape_argument_win if os.name == "nt" else shlex.quote
 
@@ -280,7 +277,7 @@ def make_torrent(opts, target):
     if opts.nodate:
         torrent_cmd += ' -d'
     if not opts.verbose:
-        torrent_cmd += dev_null
+        torrent_cmd += os.devnull
     if opts.verbose:
         print(torrent_cmd)
     r = system(torrent_cmd)
