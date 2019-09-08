@@ -174,6 +174,9 @@ class CopyTask(Task):
         with lock:
             os.makedirs(os.path.dirname(dest_fullpath), exist_ok=True)
 
+        if opts.verbose:
+            print("Copying", self.source, "to", dest_fullpath)
+
         shutil.copy(self.source, dest_fullpath)
         return 0
 
