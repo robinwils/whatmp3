@@ -214,6 +214,8 @@ def filename_from_tags(pattern, tags, dirname, filename):
         index = match.end()
     if index < len(pattern):
         new_filename += escape_percent(pattern[index:])
+
+    if os.path.splitext(filename)[1] != os.path.splitext(new_filename)[1]:
         # add extension again because we are building a new filename in a new variable
         new_filename += os.path.splitext(filename)[1]
     return new_filename % tags
