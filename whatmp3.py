@@ -8,8 +8,10 @@ import shutil
 import sys
 import threading
 import subprocess
+import pathlib
 from fnmatch import fnmatch
 from abc import ABC, abstractmethod
+from urllib.parse import unquote
 import concurrent.futures
 import shlex
 
@@ -318,6 +320,7 @@ def setup_parser():
         [['-o', '--output'],      output,      'DIR',  'set output dir'],
         [['-O', '--torrent-dir'], torrent_dir, 'DIR',  'set independent torrent output dir'],
         [['-e', '--rename'],      False,       'PATTERN', 'rename files according to tags according to PATTERN'],
+        [['-d', '--root-dir'],    None,        'DIR',     'Replace root directory in Rekordbox collection file'],
     ]:
         p.add_argument(*a[0], **{
             'default': a[1], 'action': 'store',
@@ -384,15 +387,20 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
 
 
 
-def parse_xml_playlists(node, collection_root):
+def parse_xml_playlists(node, collection_root, opts):
     if node.attrib["Type"] == "0":
         for child in node:
-            parse_xml_playlists(child, collection_root)
+            parse_xml_playlists(child, collection_root, opts)
     else:
         for child in node:
             track_id = child.attrib['Key']
             track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
-            print(f"{track_node.attrib['Artist']} - {track_node.attrib['Name']}")
+
+            track_path = pathlib.Path(track_node.attrib['Location'])
+            track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path[2:])
+
+            print(unquote(str(track_path)))
+
 
 
 
@@ -404,7 +412,7 @@ def parse_xml(xml_filename, thread_ex, codec, opts, lock):
     playlists_root = root.find("PLAYLISTS")
     collection_root = root.find("COLLECTION")
 
-    parse_xml_playlists(playlists_root[0], collection_root)
+    parse_xml_playlists(playlists_root[0], collection_root, opts)
 
 
 def main():
