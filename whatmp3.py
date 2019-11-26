@@ -330,7 +330,7 @@ def setup_parser():
         p.add_argument("--" + enc_opt, action=EncoderArg, nargs=0,
                        help='convert to %s' % (enc_opt))
     p.add_argument('sources', nargs='+', metavar='source',
-                   help='directories or playlists to transcode')
+                   help='directories, playlists or RekordBox collection to transcode')
     return p
 
 
@@ -383,6 +383,30 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
             task_dispatch(track_file, thread_ex, codec, opts, lock)
 
 
+
+def parse_xml_playlists(node, collection_root):
+    if node.attrib["Type"] == "0":
+        for child in node:
+            parse_xml_playlists(child, collection_root)
+    else:
+        for child in node:
+            track_id = child.attrib['Key']
+            track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
+            print(f"{track_node.attrib['Artist']} - {track_node.attrib['Name']}")
+
+
+
+def parse_xml(xml_filename, thread_ex, codec, opts, lock):
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(xml_filename)
+    root = tree.getroot()
+
+    playlists_root = root.find("PLAYLISTS")
+    collection_root = root.find("COLLECTION")
+
+    parse_xml_playlists(playlists_root[0], collection_root)
+
+
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
@@ -395,8 +419,11 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as thread_ex:
         for codec in codecs:
             for source_dir in opts.sources:
-                if os.path.isfile(source_dir):
+                extension = os.path.splitext(source_dir)[1]
+                if extension in ("m3u", "m3u8"):
                     parse_m3u(source_dir, thread_ex, codec, opts, lock)
+                elif extension == ".xml":
+                    parse_xml(source_dir, thread_ex, codec, opts, lock)
                 else:
                     parse_folder(source_dir, thread_ex, codec, opts, lock)
 
