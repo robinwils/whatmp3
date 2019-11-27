@@ -387,11 +387,12 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
 
 
 
-def parse_xml_playlists(node, collection_root, opts):
+def parse_xml_playlists(node, collection_root, thread_ex, codec, opts, lock):
     if node.attrib["Type"] == "0":
         for child in node:
-            parse_xml_playlists(child, collection_root, opts)
+            parse_xml_playlists(child, collection_root, thread_ex, codec, opts, lock)
     else:
+
         for child in node:
             track_id = child.attrib['Key']
             track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
@@ -399,10 +400,10 @@ def parse_xml_playlists(node, collection_root, opts):
             track_path = pathlib.Path(track_node.attrib['Location'])
             track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path[2:])
 
-            print(unquote(str(track_path)))
+            playlist_name = node.attrib['Name']
+            opts.rename = f"{playlist_name}/%f%"
 
-
-
+            task_dispatch(unquote(str(track_path)), thread_ex, codec, opts, lock)
 
 def parse_xml(xml_filename, thread_ex, codec, opts, lock):
     import xml.etree.ElementTree as ET
@@ -412,7 +413,7 @@ def parse_xml(xml_filename, thread_ex, codec, opts, lock):
     playlists_root = root.find("PLAYLISTS")
     collection_root = root.find("COLLECTION")
 
-    parse_xml_playlists(playlists_root[0], collection_root, opts)
+    parse_xml_playlists(playlists_root[0], collection_root, thread_ex, codec, opts, lock)
 
 
 def main():
