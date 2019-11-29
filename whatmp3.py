@@ -118,16 +118,17 @@ class Task(ABC):
 
 
 class TranscodeTask(Task):
-    def __init__(self, source, destination, codec, rename_pattern):
+    def __init__(self, source, destination, codec, rename_pattern, tags=None):
         self.source = source
         # output folder
         self.destination = destination
         self.codec = codec
         self.rename_pattern = rename_pattern
         self.cmd = ["ffmpeg", "-hide_banner", "-v", "warning", "-stats", "-i"]
+        self.tags = tags
 
     def execute(self, opts, lock):
-        dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+        dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source), self.tags)
         dest_fullpath = os.path.join(self.destination, dest_filename)
 
         # replace or add format name in directory
@@ -157,16 +158,17 @@ class TranscodeTask(Task):
 
 
 class CopyTask(Task):
-    def __init__(self, source, destination, codec, rename_pattern):
+    def __init__(self, source, destination, codec, rename_pattern, tags=None):
         self.source = source
         self.destination = destination
         self.codec = codec
         self.rename_pattern = rename_pattern
+        self.tags = tags
 
     def execute(self, opts, lock):
         dest_fullpath = ""
         if is_audio_file(self.source):
-            dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+            dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source), self.tags)
             dest_fullpath = os.path.join(self.destination, dest_filename)
             dest_fullpath = os.path.splitext(dest_fullpath)[0] + os.path.splitext(self.source)[1]
         else:
@@ -223,13 +225,15 @@ def filename_from_tags(pattern, tags, dirname, filename):
     return new_filename % tags
 
 
-def do_rename(rename_pattern, dirname, filename):
+def do_rename(rename_pattern, dirname, filename, tags=None):
     if not rename_pattern:
         rename_pattern = os.path.join("%d%", "%f%")
 
-    tags = tags_from_file(os.path.join(dirname, filename))
-
-    if placeholders['n'] not in tags:
+    if not tags:
+        tags = tags_from_file(os.path.join(dirname, filename))
+    try:
+        tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    except KeyError as _:
         failure(1, "{} is missing the TRACK tag".format(filename))
 
     # the new filename is only the filename (not including the leading directory)
@@ -352,12 +356,12 @@ def change_format_name(file_fullpath, codec):
         return os.path.join(leading_dirs, last_dir + " (" + codec + ")", filename)
 
 
-def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock):
+def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock, tags=None):
     if fnmatch(filename_fullpath.lower(), "*.flac") or fnmatch(filename_fullpath.lower(), "*.aiff"):
-        transcode_task = TranscodeTask(filename_fullpath, opts.output, codec, opts.rename)
+        transcode_task = TranscodeTask(filename_fullpath, opts.output, codec, opts.rename, tags)
         thread_ex.submit(transcode_task.execute, opts, lock)
     else:
-        copy_task = CopyTask(filename_fullpath, opts.output, codec, opts.rename)
+        copy_task = CopyTask(filename_fullpath, opts.output, codec, opts.rename, tags)
         thread_ex.submit(copy_task.execute, opts, lock)
 
 
@@ -386,24 +390,35 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
             task_dispatch(track_file, thread_ex, codec, opts, lock)
 
 
+def get_track_duration_in_seconds(filepath):
+    command = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filepath]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) as proc:
+        return float(proc.stdout.read().strip())
+
 
 def parse_xml_playlists(node, collection_root, thread_ex, codec, opts, lock):
     if node.attrib["Type"] == "0":
         for child in node:
             parse_xml_playlists(child, collection_root, thread_ex, codec, opts, lock)
     else:
+        playlist_name = node.attrib['Name']
 
-        for child in node:
-            track_id = child.attrib['Key']
-            track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
+        with open(f"{playlist_name}.m3u8", "w+", encoding="utf8") as playlist_file:
+            print("#EXTM3U", file=playlist_file)
+            for child in node:
+                track_id = child.attrib['Key']
+                track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
 
-            track_path = pathlib.Path(track_node.attrib['Location'])
-            track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path[2:])
+                track_path = pathlib.Path(track_node.attrib['Location'])
+                track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path.parts[2:])
+                track_path_str = unquote(str(track_path))
+                tags = tags_from_file(track_path_str)
+                #task_dispatch(track_path_str, thread_ex, codec, opts, lock)
+                seconds = get_track_duration_in_seconds(track_path_str)
+                print(track_path)
+                print(f"#EXTINF:{int(seconds)},{tags['ARTIST']} - {tags['TITLE']}", file=playlist_file)
+                print(unquote(str(track_path.name)), file=playlist_file)
 
-            playlist_name = node.attrib['Name']
-            opts.rename = f"{playlist_name}/%f%"
-
-            task_dispatch(unquote(str(track_path)), thread_ex, codec, opts, lock)
 
 def parse_xml(xml_filename, thread_ex, codec, opts, lock):
     import xml.etree.ElementTree as ET
