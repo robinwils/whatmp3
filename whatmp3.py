@@ -226,13 +226,12 @@ def do_rename(rename_pattern, dirname, filename):
         rename_pattern = os.path.join("%d%", "%f%")
 
     tags = tags_from_file(os.path.join(dirname, filename))
-    try:
-        tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
-    except KeyError as _:
+
+    if placeholders['n'] not in tags:
         failure(1, "{} is missing the TRACK tag".format(filename))
 
     # the new filename is only the filename (not including the leading directory)
-    # filename can conatin directories, we need to create the non existing ones
+    # filename can contain directories, we need to create the non existing ones
     return filename_from_tags(rename_pattern, tags, dirname, filename)
 
 
@@ -251,7 +250,7 @@ def tags_from_file(filepath):
         if len(tag) != 2 or tag[0].upper() not in copy_tags:
             continue
         # create a dict of tags
-        tags[tag[0].upper()] = tag[1]
+        tags[tag[0].upper()] = tag[1].replace(':', '-').replace('/', '-')
 
     return tags
 
