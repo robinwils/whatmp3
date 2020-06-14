@@ -138,7 +138,7 @@ class TranscodeTask(Task):
         dest_fullpath = os.path.join(self.destination, dest_filename)
 
         # replace or add format name in directory
-        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+        dest_fullpath = change_format_name(dest_fullpath, self.codec, opts.addcodec)
 
         dest_fullpath = os.path.splitext(dest_fullpath)[0] + enc_opts[self.codec]['ext']
 
@@ -181,7 +181,7 @@ class CopyTask(Task):
             dest_folder, dest_filename = os.path.split(self.source)
             dest_fullpath = os.path.join(self.destination, os.path.basename(dest_folder), dest_filename)
         # replace or add format name in directory
-        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+        dest_fullpath = change_format_name(dest_fullpath, self.codec, opts.addcodec)
 
         with lock:
             os.makedirs(os.path.dirname(dest_fullpath), exist_ok=True)
@@ -321,6 +321,7 @@ def setup_parser():
         [['-C', '--nocue'],      False,     'do not copy cue files after conversion'],
         [['-H', '--nodots'],     False,     'do not copy dot/hidden files after conversion'],
         [['-w', '--overwrite'],  False,     'overwrite files in output dir'],
+        [['--addcodec'],         False,     'automatically add codec in dir name if possible'],
         [['-m', '--copyother'],  copyother, 'copy additional files (def: true)'],
     ]:
         p.add_argument(*a[0], **{'default': a[1], 'action': 'store_true', 'help': a[2]})
@@ -351,15 +352,17 @@ def system(cmd):
     return os.system(cmd)
 
 
-def change_format_name(file_fullpath, codec):
+def change_format_name(file_fullpath, codec, addcodec):
     directory_fullpath, filename = os.path.split(file_fullpath)
     leading_dirs, last_dir = os.path.split(directory_fullpath)
 
     flacre = re.compile("FLAC|AIFF", re.IGNORECASE)
     if flacre.search(last_dir):
         return os.path.join(leading_dirs, flacre.sub(codec, last_dir), filename)
-    else:
+    elif addcodec:
         return os.path.join(leading_dirs, last_dir + " (" + codec + ")", filename)
+    else:
+        return file_fullpath
 
 
 def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock, tags=None):
