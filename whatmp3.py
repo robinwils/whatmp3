@@ -8,10 +8,13 @@ import shutil
 import sys
 import threading
 import subprocess
+import pathlib
 from fnmatch import fnmatch
 from abc import ABC, abstractmethod
+from urllib.parse import unquote
 import concurrent.futures
 import shlex
+import unicodedata
 
 def escape_argument_win(arg):
     # Escape the argument for the cmd.exe shell.
@@ -106,6 +109,10 @@ def is_audio_file(filename):
     return os.path.splitext(filename)[1].lower() in [".mp3", ".flac", ".m4a", ".wav", ".aiff", ".ogg"]
 
 
+def remove_unicode_chars(string):
+    return unicodedata.normalize('NFKD', string).encode('ascii', 'ignore').decode('utf-8')
+
+
 class Task(ABC):
     def __init__(self):
         pass
@@ -116,20 +123,22 @@ class Task(ABC):
 
 
 class TranscodeTask(Task):
-    def __init__(self, source, destination, codec, rename_pattern):
+    def __init__(self, source, destination, codec, rename_pattern, tags=None):
         self.source = source
         # output folder
         self.destination = destination
         self.codec = codec
         self.rename_pattern = rename_pattern
         self.cmd = ["ffmpeg", "-hide_banner", "-v", "warning", "-stats", "-i"]
+        self.tags = tags
 
     def execute(self, opts, lock):
-        dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+        dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source), self.tags)
+        dest_filename = remove_unicode_chars(dest_filename)
         dest_fullpath = os.path.join(self.destination, dest_filename)
 
         # replace or add format name in directory
-        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+        dest_fullpath = change_format_name(dest_fullpath, self.codec, opts.addcodec)
 
         dest_fullpath = os.path.splitext(dest_fullpath)[0] + enc_opts[self.codec]['ext']
 
@@ -155,23 +164,24 @@ class TranscodeTask(Task):
 
 
 class CopyTask(Task):
-    def __init__(self, source, destination, codec, rename_pattern):
+    def __init__(self, source, destination, codec, rename_pattern, tags=None):
         self.source = source
         self.destination = destination
         self.codec = codec
         self.rename_pattern = rename_pattern
+        self.tags = tags
 
     def execute(self, opts, lock):
         dest_fullpath = ""
         if is_audio_file(self.source):
-            dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source))
+            dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source), self.tags)
             dest_fullpath = os.path.join(self.destination, dest_filename)
             dest_fullpath = os.path.splitext(dest_fullpath)[0] + os.path.splitext(self.source)[1]
         else:
             dest_folder, dest_filename = os.path.split(self.source)
             dest_fullpath = os.path.join(self.destination, os.path.basename(dest_folder), dest_filename)
         # replace or add format name in directory
-        dest_fullpath = change_format_name(dest_fullpath, self.codec)
+        dest_fullpath = change_format_name(dest_fullpath, self.codec, opts.addcodec)
 
         with lock:
             os.makedirs(os.path.dirname(dest_fullpath), exist_ok=True)
@@ -221,13 +231,15 @@ def filename_from_tags(pattern, tags, dirname, filename):
     return new_filename % tags
 
 
-def do_rename(rename_pattern, dirname, filename):
+def do_rename(rename_pattern, dirname, filename, tags=None):
     if not rename_pattern:
         rename_pattern = os.path.join("%d%", "%f%")
 
-    tags = tags_from_file(os.path.join(dirname, filename))
-
-    if placeholders['n'] not in tags:
+    if not tags:
+        tags = tags_from_file(os.path.join(dirname, filename))
+    try:
+        tags[placeholders['n']] = tags[placeholders['n']].split('/')[0]
+    except KeyError as _:
         failure(1, "{} is missing the TRACK tag".format(filename))
 
     # the new filename is only the filename (not including the leading directory)
@@ -309,6 +321,7 @@ def setup_parser():
         [['-C', '--nocue'],      False,     'do not copy cue files after conversion'],
         [['-H', '--nodots'],     False,     'do not copy dot/hidden files after conversion'],
         [['-w', '--overwrite'],  False,     'overwrite files in output dir'],
+        [['--addcodec'],         False,     'automatically add codec in dir name if possible'],
         [['-m', '--copyother'],  copyother, 'copy additional files (def: true)'],
     ]:
         p.add_argument(*a[0], **{'default': a[1], 'action': 'store_true', 'help': a[2]})
@@ -318,6 +331,7 @@ def setup_parser():
         [['-o', '--output'],      output,      'DIR',  'set output dir'],
         [['-O', '--torrent-dir'], torrent_dir, 'DIR',  'set independent torrent output dir'],
         [['-e', '--rename'],      False,       'PATTERN', 'rename files according to tags according to PATTERN'],
+        [['-d', '--root-dir'],    None,        'DIR',     'Replace root directory in Rekordbox collection file'],
     ]:
         p.add_argument(*a[0], **{
             'default': a[1], 'action': 'store',
@@ -330,7 +344,7 @@ def setup_parser():
         p.add_argument("--" + enc_opt, action=EncoderArg, nargs=0,
                        help='convert to %s' % (enc_opt))
     p.add_argument('sources', nargs='+', metavar='source',
-                   help='directories or playlists to transcode')
+                   help='directories, playlists or RekordBox collection to transcode')
     return p
 
 
@@ -338,23 +352,25 @@ def system(cmd):
     return os.system(cmd)
 
 
-def change_format_name(file_fullpath, codec):
+def change_format_name(file_fullpath, codec, addcodec):
     directory_fullpath, filename = os.path.split(file_fullpath)
     leading_dirs, last_dir = os.path.split(directory_fullpath)
 
     flacre = re.compile("FLAC|AIFF", re.IGNORECASE)
     if flacre.search(last_dir):
         return os.path.join(leading_dirs, flacre.sub(codec, last_dir), filename)
-    else:
+    elif addcodec:
         return os.path.join(leading_dirs, last_dir + " (" + codec + ")", filename)
+    else:
+        return file_fullpath
 
 
-def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock):
+def task_dispatch(filename_fullpath, thread_ex, codec, opts, lock, tags=None):
     if fnmatch(filename_fullpath.lower(), "*.flac") or fnmatch(filename_fullpath.lower(), "*.aiff"):
-        transcode_task = TranscodeTask(filename_fullpath, opts.output, codec, opts.rename)
+        transcode_task = TranscodeTask(filename_fullpath, opts.output, codec, opts.rename, tags)
         thread_ex.submit(transcode_task.execute, opts, lock)
     else:
-        copy_task = CopyTask(filename_fullpath, opts.output, codec, opts.rename)
+        copy_task = CopyTask(filename_fullpath, opts.output, codec, opts.rename, tags)
         thread_ex.submit(copy_task.execute, opts, lock)
 
 
@@ -383,9 +399,53 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
             task_dispatch(track_file, thread_ex, codec, opts, lock)
 
 
+def get_track_duration_in_seconds(filepath):
+    command = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filepath]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True) as proc:
+        return float(proc.stdout.read().strip())
+
+
+def parse_xml_playlists(node, collection_root, thread_ex, codec, opts, lock):
+    if node.attrib["Type"] == "0":
+        for child in node:
+            parse_xml_playlists(child, collection_root, thread_ex, codec, opts, lock)
+    else:
+        playlist_name = node.attrib['Name']
+
+        with open(f"{opts.output}/{playlist_name}.m3u8", "w+", encoding="utf8") as playlist_file:
+            print("#EXTM3U", file=playlist_file)
+            for child in node:
+                track_id = child.attrib['Key']
+                track_node = collection_root.find(f"./TRACK[@TrackID='{track_id}']")
+
+                track_path = pathlib.Path(track_node.attrib['Location'])
+                track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path.parts[2:])
+                track_path_str = unquote(str(track_path))
+                tags = tags_from_file(track_path_str)
+                task_dispatch(track_path_str, thread_ex, codec, opts, lock)
+                seconds = get_track_duration_in_seconds(track_path_str)
+                print(track_path)
+                pl_header = f"#EXTINF:{int(seconds)},{tags['ARTIST']} - {tags['TITLE']}"
+                print(remove_unicode_chars(pl_header), file=playlist_file)
+                print(remove_unicode_chars(unquote(str(track_path.name))), file=playlist_file)
+
+
+def parse_xml(xml_filename, thread_ex, codec, opts, lock):
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(xml_filename)
+    root = tree.getroot()
+
+    playlists_root = root.find("PLAYLISTS")
+    collection_root = root.find("COLLECTION")
+
+    parse_xml_playlists(playlists_root[0], collection_root, thread_ex, codec, opts, lock)
+
+
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
+
+    os.makedirs(opts.output, exist_ok=True)
 
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
@@ -395,8 +455,11 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=opts.max_threads) as thread_ex:
         for codec in codecs:
             for source_dir in opts.sources:
-                if os.path.isfile(source_dir):
+                extension = os.path.splitext(source_dir)[1]
+                if extension in (".m3u", ".m3u8"):
                     parse_m3u(source_dir, thread_ex, codec, opts, lock)
+                elif extension == ".xml":
+                    parse_xml(source_dir, thread_ex, codec, opts, lock)
                 else:
                     parse_folder(source_dir, thread_ex, codec, opts, lock)
 
