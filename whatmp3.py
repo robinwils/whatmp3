@@ -321,6 +321,7 @@ def setup_parser():
         [['-C', '--nocue'],      False,     'do not copy cue files after conversion'],
         [['-H', '--nodots'],     False,     'do not copy dot/hidden files after conversion'],
         [['-w', '--overwrite'],  False,     'overwrite files in output dir'],
+        [['-p', '--pldir'],      False,     'create separate folder for playlist'],
         [['--addcodec'],         False,     'automatically add codec in dir name if possible'],
         [['-m', '--copyother'],  copyother, 'copy additional files (def: true)'],
     ]:
@@ -394,7 +395,8 @@ def parse_m3u(playlist_filename, thread_ex, codec, opts, lock):
                 failure(track_file, "does not exist")
                 continue
 
-            opts.rename = opts.rename if opts.rename else "%f%"
+            if not opts.rename:
+                opts.rename = f"{os.path.splitext(playlist_filename)[0]}/%f%" if opts.pldir else "%f%"
 
             task_dispatch(track_file, thread_ex, codec, opts, lock)
 
