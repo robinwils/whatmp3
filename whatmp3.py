@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import unquote
 import concurrent.futures
 import shlex
+import unicodedata
 
 def escape_argument_win(arg):
     # Escape the argument for the cmd.exe shell.
@@ -108,6 +109,10 @@ def is_audio_file(filename):
     return os.path.splitext(filename)[1].lower() in [".mp3", ".flac", ".m4a", ".wav", ".aiff", ".ogg"]
 
 
+def remove_unicode_chars(string):
+    return unicodedata.normalize('NFKD', string).encode('ascii', 'ignore').decode('utf-8')
+
+
 class Task(ABC):
     def __init__(self):
         pass
@@ -129,6 +134,7 @@ class TranscodeTask(Task):
 
     def execute(self, opts, lock):
         dest_filename = do_rename(self.rename_pattern, *os.path.split(self.source), self.tags)
+        dest_filename = remove_unicode_chars(dest_filename)
         dest_fullpath = os.path.join(self.destination, dest_filename)
 
         # replace or add format name in directory
@@ -403,7 +409,7 @@ def parse_xml_playlists(node, collection_root, thread_ex, codec, opts, lock):
     else:
         playlist_name = node.attrib['Name']
 
-        with open(f"{playlist_name}.m3u8", "w+", encoding="utf8") as playlist_file:
+        with open(f"{opts.output}/{playlist_name}.m3u8", "w+", encoding="utf8") as playlist_file:
             print("#EXTM3U", file=playlist_file)
             for child in node:
                 track_id = child.attrib['Key']
@@ -413,11 +419,12 @@ def parse_xml_playlists(node, collection_root, thread_ex, codec, opts, lock):
                 track_path = pathlib.Path(opts.root_dir).joinpath(pathlib.Path(*track_path.parts[3:])) if opts.root_dir else pathlib.Path(*track_path.parts[2:])
                 track_path_str = unquote(str(track_path))
                 tags = tags_from_file(track_path_str)
-                #task_dispatch(track_path_str, thread_ex, codec, opts, lock)
+                task_dispatch(track_path_str, thread_ex, codec, opts, lock)
                 seconds = get_track_duration_in_seconds(track_path_str)
                 print(track_path)
-                print(f"#EXTINF:{int(seconds)},{tags['ARTIST']} - {tags['TITLE']}", file=playlist_file)
-                print(unquote(str(track_path.name)), file=playlist_file)
+                pl_header = f"#EXTINF:{int(seconds)},{tags['ARTIST']} - {tags['TITLE']}"
+                print(remove_unicode_chars(pl_header), file=playlist_file)
+                print(remove_unicode_chars(unquote(str(track_path.name))), file=playlist_file)
 
 
 def parse_xml(xml_filename, thread_ex, codec, opts, lock):
@@ -434,6 +441,8 @@ def parse_xml(xml_filename, thread_ex, codec, opts, lock):
 def main():
     parser = setup_parser()
     opts = parser.parse_args()
+
+    os.makedirs(opts.output, exist_ok=True)
 
     if len(codecs) == 0 and not opts.original and not opts.rename:
         parser.error("you must provide at least one format to transcode to")
