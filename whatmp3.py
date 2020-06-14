@@ -456,7 +456,7 @@ def main():
         for codec in codecs:
             for source_dir in opts.sources:
                 extension = os.path.splitext(source_dir)[1]
-                if extension in ("m3u", "m3u8"):
+                if extension in (".m3u", ".m3u8"):
                     parse_m3u(source_dir, thread_ex, codec, opts, lock)
                 elif extension == ".xml":
                     parse_xml(source_dir, thread_ex, codec, opts, lock)
